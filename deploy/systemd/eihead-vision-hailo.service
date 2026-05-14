@@ -1,0 +1,19 @@
+[Unit]
+Description=eihead Hailo realtime vision state service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/eihead/current
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/eihead/current:/usr/lib/python3/dist-packages:/home/darrow/.local/lib/python3.13/site-packages
+EnvironmentFile=-/etc/eihead/eihead.env
+ExecStart=/opt/eihead/current/.venv/bin/python -m apps.body_runtime.vision_hailo_service --config /opt/eihead/current/config/eibrain.honjia.yaml --backend gstreamer --state-path /tmp/eibrain-vision/state.json --interval-s 0.1 --security-vision-always-on
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/eihead/eihead-vision-hailo.service.log
+StandardError=append:/var/log/eihead/eihead-vision-hailo.service.log
+
+[Install]
+WantedBy=default.target

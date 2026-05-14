@@ -1,0 +1,449 @@
+system:
+  project_name: eibrain
+  environment: production-honjia
+
+deployment:
+  root_dir: /home/${USER}/eibrain
+  body_runtime_dir: ""
+  cognitive_runtime_dir: ""
+  allow_override: true
+
+body:
+  node_id: honjia
+  foundation:
+    ear: camera_mic
+    eye: camera
+    mouth: speaker
+    neck: gimbal
+  organs:
+    ear:
+      enabled: true
+      capture:
+        driver:
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/arecord
+            - --device
+            - /dev/snd
+            - --label
+            - audio-input
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/arecord
+            - --device
+            - /dev/snd
+            - --label
+            - audio-input
+          device: plughw:CARD=U4K,DEV=0
+          sample_rate: 16000
+          channels: 1
+          chunk_count: 2
+          refresh_interval_s: 1.5
+          streaming_vad: true
+          vad_frame_ms: 80
+          vad_rms_threshold: 0.085
+          vad_min_voice_ms: 160
+          vad_end_silence_ms: 650
+          vad_pre_roll_ms: 320
+          vad_min_capture_ms: 1100
+          transcribe_vad_miss: true
+          vad_miss_rms_threshold: 0.075
+          vad_endpoint_policy: true
+      vad:
+        driver:
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/arecord
+            - --device
+            - /dev/snd
+            - --label
+            - audio-vad
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/arecord
+            - --device
+            - /dev/snd
+            - --label
+            - audio-vad
+      asr:
+        driver:
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-sherpa-model
+            - --model-dir
+            - /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-sherpa-model
+            - --model-dir
+            - /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+          provider: sherpa_onnx
+          model_dir: /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+          model_type: lstm
+          language: zh
+          min_asr_dbfs: -35.0
+          transcript_replacements:
+            鸿好鸿途: 你好鸿途
+            您好鸿途: 你好鸿途
+            我不介绍: 介绍下你自己
+            不介绍: 介绍下你自己
+            你好宏图: 你好鸿途
+            你好洪图: 你好鸿途
+            你好黄土: 你好鸿途
+            你好洪福: 你好鸿途
+            你好胡服: 你好鸿途
+            你好红烛: 你好鸿途
+            你好红姑: 你好鸿途
+            你好黄图: 你好鸿途
+            你好黄渤: 你好鸿途
+            宏图: 鸿途
+            洪图: 鸿途
+            黄土: 鸿途
+    eye:
+      enabled: true
+      camera:
+        driver:
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/v4l2-ctl
+            - --device
+            - /dev/video0
+            - --label
+            - camera
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/v4l2-ctl
+            - --device
+            - /dev/video0
+            - --label
+            - camera
+          device: /dev/video0
+          input_format: mjpeg
+          video_size: 640x480
+          timeout_s: 5.0
+          frame_path: /tmp/eibrain-vision/latest.jpg
+          state_path: /tmp/eibrain-vision/state.json
+          stale_after_s: 3.0
+      detection:
+        driver:
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/python3
+            - --device
+            - /dev/hailo0
+            - --label
+            - hailo8
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/python3
+            - --device
+            - /dev/hailo0
+            - --label
+            - hailo8
+          provider: vision_state
+          device: /dev/hailo0
+          hef_path: /usr/share/hailo-models/yolov5s_personface_h8l.hef
+          postprocess_so_path: /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so
+          postprocess_config_path: /usr/share/hailo-models/yolov5_personface.json
+          postprocess_function: filter
+          score_threshold: 0.3
+          state_path: /tmp/eibrain-vision/state.json
+          frame_path: /tmp/eibrain-vision/latest.jpg
+          stale_after_s: 3.0
+          labels:
+            - person
+            - face
+          models:
+            - id: personface
+              kind: yolo
+              enabled: true
+              hef_path: /usr/share/hailo-models/yolov5s_personface_h8l.hef
+              postprocess_so_path: /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so
+              postprocess_config_path: /usr/share/hailo-models/yolov5_personface.json
+              postprocess_function: filter
+              labels:
+                - person
+                - face
+              score_threshold: 0.3
+              cadence_hz: 2.0
+              priority: 80
+              output_kind: detections
+            - id: yolov8s_h8
+              kind: yolo
+              enabled: true
+              hef_path: /usr/share/hailo-models/yolov8s_h8.hef
+              postprocess_so_path: /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so
+              postprocess_config_path: ""
+              postprocess_function: yolov8s
+              label_set: coco80
+              score_threshold: 0.35
+              cadence_hz: 1.0
+              priority: 120
+              output_kind: objects
+          refresh_interval_s: 0.5
+      identity:
+        driver:
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/python3
+            - --device
+            - /dev/hailo0
+            - --label
+            - hailo8-identity
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/python3
+            - --device
+            - /dev/hailo0
+            - --label
+            - hailo8-identity
+          provider: anonymous_face
+          device: /dev/hailo0
+    mouth:
+      enabled: true
+      tts_plan:
+        driver:
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-speaker
+            - --output-device
+            - alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo
+            - --playback-backend
+            - pw-play
+            - --backend
+            - minimax
+            - --model
+            - speech-2.8-hd
+            - --voice-id
+            - female-shaonv
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-speaker
+            - --output-device
+            - alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo
+            - --playback-backend
+            - pw-play
+            - --backend
+            - minimax
+            - --model
+            - speech-2.8-hd
+            - --voice-id
+            - female-shaonv
+      tts_playback:
+        driver:
+          kind: command
+          timeout_s: 60
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - speak
+            - --output-device
+            - plughw:2,0
+            - --backend
+            - minimax
+            - --model
+            - speech-2.8-hd
+            - --voice-id
+            - female-shaonv
+            - --speed
+            - "1.15"
+            - --audio-format
+            - wav
+            - --sample-rate
+            - "32000"
+            - --channel
+            - "1"
+            - --cache-dir
+            - /tmp/eibrain-tts-cache
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-speaker
+            - --output-device
+            - plughw:2,0
+            - --backend
+            - minimax
+            - --model
+            - speech-2.8-hd
+            - --voice-id
+            - female-shaonv
+          backend: minimax
+          output_device: alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo
+          playback_backend: pw-play
+          model: speech-2.8-hd
+          voice_id: female-shaonv
+          audio_format: wav
+          sample_rate: 32000
+          channel: 1
+          speed: 1.15
+    neck:
+      enabled: true
+      motor:
+        driver:
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - move-gimbal
+            - --servo-id
+            - "1"
+            - --home-angle
+            - "90"
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/python3
+            - --device
+            - /dev/i2c-1
+            - --label
+            - gimbal
+          home_angle: 90
+          pan_min: 40
+          pan_max: 140
+          tracking_deadband: 0.22
+          tracking_step_gain: 10.0
+          tracking_max_step: 4
+          tracking_min_interval_s: 0.9
+          tracking_smoothing_alpha: 0.20
+          tracking_labels:
+            - face
+            - person
+      tracking:
+        driver:
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/python3
+            - --device
+            - /dev/i2c-1
+            - --label
+            - gimbal-tracking
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/python3
+            - --device
+            - /dev/i2c-1
+            - --label
+            - gimbal-tracking
+
+cognition:
+  node_id: honxin
+  llm:
+    provider: openai_compatible
+    model: ${LLM_MODEL:-qwen3-max-2026-01-23}
+    endpoint: ${LLM_BASE_URL:-https://coding.dashscope.aliyuncs.com/v1/chat/completions}
+    api_key: ${LLM_API_KEY}
+    temperature: 0.2
+    max_tokens: 128
+    supports_vision: false
+    experimental: false
+  vision_llm:
+    provider: anthropic_compatible
+    model: ${ANTHROPIC_VISION_MODEL:-coding-plan-vlm}
+    endpoint: ${ANTHROPIC_BASE_URL:-https://api.minimaxi.com/anthropic}
+    api_key: ${ANTHROPIC_AUTH_TOKEN}
+    temperature: 0.2
+    max_tokens: 80
+    supports_vision: true
+    experimental: true
+
+vision:
+  provider: minimax_cli
+  cli:
+    enabled: true
+    command: ${MINIMAX_CLI_COMMAND:-mmx}
+    api_key: ${MINIMAX_API_KEY:-}
+    base_url: ${MINIMAX_API_HOST:-https://api.minimaxi.com}
+  mcp:
+    enabled: false
+    command:
+      - uvx
+      - minimax-coding-plan-mcp
+      - -y
+    api_key: ${MINIMAX_API_KEY:-}
+    api_host: ${MINIMAX_API_HOST:-https://api.minimaxi.com}
+    base_path: ${MINIMAX_MCP_BASE_PATH:-}
+    resource_mode: ${MINIMAX_API_RESOURCE_MODE:-url}
+
+monitoring:
+  enabled: true
+  host: 0.0.0.0
+  port: 18080
+
+memory:
+  openclaw:
+    provider: ${EIBRAIN_MEMORY_PROVIDER:-eimemory_rpc}
+    endpoint: ${EIMEMORY_ENDPOINT:-http://honxin:8091/}
+    api_key: ${OPENCLAW_API_KEY}
+    timeout_s: 5.0
+    agent_id: honxin
+    workspace_id: honjia

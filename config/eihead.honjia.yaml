@@ -1,0 +1,65 @@
+node_id: honjia
+
+runtime:
+  host: ${EIHEAD_RUNTIME_HOST:-0.0.0.0}
+  port: ${EIHEAD_RUNTIME_PORT:-18081}
+
+monitor:
+  host: ${EIHEAD_MONITOR_HOST:-0.0.0.0}
+  port: ${EIHEAD_MONITOR_PORT:-18080}
+
+legacy:
+  eibrain_config_path: ${EIHEAD_LEGACY_EIBRAIN_CONFIG:-config/eibrain.honjia.yaml}
+  body_runtime_config_path: ${EIHEAD_LEGACY_BODY_CONFIG:-config/eibrain.honjia.yaml}
+
+devices:
+  camera:
+    path: /dev/video0
+    frame_path: /tmp/eibrain-vision/latest.jpg
+    state_path: /tmp/eibrain-vision/state.json
+  hailo:
+    path: /dev/hailo0
+    hef_path: /usr/share/hailo-models/yolov5s_personface_h8l.hef
+  i2c:
+    path: /dev/i2c-1
+    bus: 1
+  microphone:
+    path: /dev/snd
+    device: plughw:CARD=U4K,DEV=0
+    sample_rate: 16000
+    channels: 1
+  speaker:
+    path: ""
+    device: default
+  neck:
+    path: /dev/i2c-1
+    axis: yaw
+    i2c_addr: "0x2B"
+    servo_id: 1
+    pan_deg: [0, 180]
+    tilt_deg: null
+
+capabilities:
+  software:
+    asr:
+      enabled: true
+      provider: sherpa_onnx
+      model: sherpa-onnx-streaming
+      model_dir: /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+      limits:
+        streaming: true
+        languages: [zh]
+    tts:
+      enabled: true
+      provider: minimax
+      model: speech-2.8-hd
+      limits:
+        streaming: false
+        languages: [zh]
+    vision_backend:
+      enabled: true
+      backend: hailo
+      model: personface-yolo
+      limits:
+        realtime: true
+        max_fps: 15

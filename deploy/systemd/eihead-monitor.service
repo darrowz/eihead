@@ -1,0 +1,25 @@
+[Unit]
+Description=eihead native monitoring web service
+After=network-online.target eihead-runtime.service
+Wants=network-online.target
+Requires=eihead-runtime.service
+
+[Service]
+Type=simple
+User=darrow
+Group=darrow
+WorkingDirectory=/opt/eihead/current
+Environment=PYTHONUNBUFFERED=1
+Environment=EIHEAD_CONFIG=/etc/eihead/eihead.honjia.yaml
+Environment=EIHEAD_EXPORT_MANIFEST=/opt/eihead/current/EXPORT_MANIFEST.json
+Environment=EIHEAD_RUNTIME_URL=http://127.0.0.1:18081
+Environment=EIHEAD_MONITOR_HOST=0.0.0.0
+Environment=EIHEAD_MONITOR_PORT=18080
+EnvironmentFile=-/etc/eihead/eihead.env
+# Native monitor keeps the existing honjia web URL on :18080 after the old eibrain monitor is stopped.
+ExecStart=/opt/eihead/current/.venv/bin/eihead-runtime --config /etc/eihead/eihead.honjia.yaml monitor --host 0.0.0.0 --port 18080
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

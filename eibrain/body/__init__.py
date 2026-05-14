@@ -1,0 +1,1 @@
+"""Body domain for eibrain."""
