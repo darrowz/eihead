@@ -41,7 +41,7 @@ devices:
     channels: 1
   speaker:
     path: ""
-    device: default
+    device: plughw:CARD=SPA3700,DEV=0
   neck:
     path: /dev/i2c-1
     axis: yaw
