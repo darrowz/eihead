@@ -254,12 +254,13 @@ def _build_realtime_diagnostic(
         stale=stale,
         degraded=degraded,
     )
-    readiness_message = _string_or_none(_first_nested_present(observation, "readiness_message", "message"))
+    observation_message = _string_or_none(_first_nested_present(observation, "message"))
+    readiness_message = _string_or_none(_first_nested_present(observation, "readiness_message")) or observation_message
     not_wired_reason = _string_or_none(_first_nested_present(observation, "not_wired_reason"))
     stale_reason = _string_or_none(_first_nested_present(observation, "stale_reason"))
     degraded_reason = _string_or_none(_first_nested_present(observation, "degraded_reason"))
     if degraded and not degraded_reason:
-        degraded_reason = readiness_message or status_reason
+        degraded_reason = observation_message or readiness_message or status_reason
     readiness = _readiness_payload(
         _first_nested_present(observation, "readiness"),
         ready=stream_ready,

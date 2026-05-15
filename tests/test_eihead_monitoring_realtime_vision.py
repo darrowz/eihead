@@ -347,6 +347,7 @@ def test_realtime_vision_payload_marks_wired_waiting_stream_as_degraded() -> Non
             "status": "waiting_for_frame",
             "stream_ready": False,
             "not_wired": False,
+            "readiness_message": "realtime adapter is wired",
             "message": "no realtime frame available",
         },
         timestamp=1000.0,
