@@ -8,8 +8,7 @@ Type=simple
 WorkingDirectory=/opt/eihead/current
 EnvironmentFile=-/etc/eihead/eihead.env
 Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=/opt/eihead/current:/opt/eihead/current/.venv/lib/python3.13/site-packages:/usr/lib/python3/dist-packages:/home/darrow/.local/lib/python3.13/site-packages
-ExecStart=/usr/bin/python3.13 -m eihead.eye.vision_loop --config /etc/eihead/eihead.honjia.yaml --state-path /tmp/eibrain-vision/state.json --interval-s 0.1
+ExecStart=/usr/bin/env PYTHONPATH=/opt/eihead/current:/opt/eihead/current/.venv/lib/python3.13/site-packages:/usr/lib/python3/dist-packages:/home/darrow/.local/lib/python3.13/site-packages /usr/bin/python3.13 -m eihead.eye.vision_loop --config /etc/eihead/eihead.honjia.yaml --state-path /tmp/eibrain-vision/state.json --interval-s 0.1
 Restart=always
 RestartSec=3
 StandardOutput=append:/var/log/eihead/eihead-vision-hailo.service.log
