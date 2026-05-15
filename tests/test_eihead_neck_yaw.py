@@ -8,7 +8,7 @@ import sys
 from eihead.runtime.app import HeadRuntimeApp
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_module(name: str, path: str):

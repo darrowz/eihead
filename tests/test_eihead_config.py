@@ -9,7 +9,7 @@ from eihead.runtime.config import EiheadConfigError, load_eihead_config, parse_e
 
 
 def test_template_loads_runtime_monitor_devices_and_legacy_paths() -> None:
-    config_path = Path(__file__).resolve().parents[2] / "config" / "eihead.honjia.yaml"
+    config_path = Path(__file__).resolve().parents[1] / "config" / "eihead.honjia.yaml"
 
     config = load_eihead_config(config_path)
 

@@ -56,6 +56,7 @@ class RealtimeVisionSceneBridge:
         )
         scene_snapshot = _scene_content(snapshot)
         _augment_scene_with_detection_modalities(scene_snapshot, detections)
+        _attach_tracking_diagnostics(scene_snapshot)
         _attach_observation_metadata(scene_snapshot, observation)
         event_contents = _event_contents(snapshot)
         event_contents.extend(_lightweight_event_contents(scene_snapshot, observed_at=observed_at, frame_id=frame_id))
@@ -88,7 +89,11 @@ class RealtimeVisionSceneBridge:
             "scene_snapshot": scene_snapshot,
             "scene_summary": str(snapshot.get("sceneGraphSummary", "")),
             "sceneGraphSummary": str(snapshot.get("sceneGraphSummary", "")),
-            "event_summary": str(snapshot.get("eventSummary") or scene_snapshot.get("eventSummary") or ""),
+            "event_summary": str(
+                snapshot.get("eventSummary")
+                or scene_snapshot.get("eventSummary")
+                or _event_summary(event_contents)
+            ),
             "event_contents": event_contents,
             "events": event_contents,
             "tracks": [dict(item) for item in scene_snapshot.get("objects", []) if isinstance(item, Mapping)],
@@ -315,6 +320,15 @@ def _attach_observation_metadata(scene_snapshot: dict[str, Any], observation: Ma
     soak_summary = observation.get("soak_summary")
     if isinstance(soak_summary, Mapping):
         metadata["soak_summary"] = dict(soak_summary)
+
+
+def _attach_tracking_diagnostics(scene_snapshot: dict[str, Any]) -> None:
+    objects = [item for item in scene_snapshot.get("objects", []) if isinstance(item, Mapping)]
+    for item in objects:
+        diagnostics = item.get("trackingDiagnostics")
+        if isinstance(diagnostics, Mapping):
+            scene_snapshot.setdefault("trackingDiagnostics", dict(diagnostics))
+            return
 
 
 def _augment_scene_with_detection_modalities(scene_snapshot: dict[str, Any], detections: list[Mapping[str, Any]]) -> None:
@@ -678,18 +692,20 @@ def _event_contents(snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
         return to_eiprotocol_event_contents(snapshot)
     contents: list[dict[str, Any]] = []
     for event in _dict_list(snapshot.get("events")):
-        contents.append(
-            {
-                "eventId": str(event.get("eventId", "")),
-                "eventType": str(event.get("eventType", "")),
-                "observedAt": str(event.get("observedAt", "")),
-                "sceneId": str(event.get("sceneId", "")),
-                "subject": dict(event.get("subject")) if isinstance(event.get("subject"), Mapping) else {},
-                "confidence": event.get("confidence"),
-                "details": dict(event.get("details")) if isinstance(event.get("details"), Mapping) else {},
-                "metadata": dict(event.get("metadata")) if isinstance(event.get("metadata"), Mapping) else {},
-            }
-        )
+        content = {
+            "eventId": str(event.get("eventId", "")),
+            "eventType": str(event.get("eventType", "")),
+            "observedAt": str(event.get("observedAt", "")),
+            "sceneId": str(event.get("sceneId", "")),
+            "subject": dict(event.get("subject")) if isinstance(event.get("subject"), Mapping) else {},
+            "confidence": event.get("confidence"),
+            "details": dict(event.get("details")) if isinstance(event.get("details"), Mapping) else {},
+            "metadata": dict(event.get("metadata")) if isinstance(event.get("metadata"), Mapping) else {},
+        }
+        tracking_diagnostics = event.get("trackingDiagnostics")
+        if isinstance(tracking_diagnostics, Mapping):
+            content["trackingDiagnostics"] = dict(tracking_diagnostics)
+        contents.append(content)
     return contents
 
 
@@ -734,6 +750,7 @@ class _FallbackRealtimeVisionSimulator:
             )
             current_region = _region(_center(track["bbox"]))
             if distance >= self.move_threshold or previous_region != current_region:
+                track["temporalState"] = "moving"
                 events.append(
                     _fallback_event(
                         event_type="moved",
@@ -745,11 +762,14 @@ class _FallbackRealtimeVisionSimulator:
                         distance=distance,
                     )
                 )
+            else:
+                track["temporalState"] = "stationary"
 
         for detection_index, detection in enumerate(normalized):
             if detection_index in matched_detection_indexes:
                 continue
             track = self._new_track(detection, frame_id=frame_id, observed_at=observed_at)
+            track["temporalState"] = "appeared"
             self._tracks[str(track["trackId"])] = track
             matched_track_ids.add(str(track["trackId"]))
             events.append(
@@ -784,18 +804,6 @@ class _FallbackRealtimeVisionSimulator:
 
         active_tracks = [track for track in self._tracks.values() if int(track.get("missing_frames", 0)) == 0]
         attention = max(active_tracks, key=lambda item: (float(item["confidence"]), str(item["trackId"])), default=None)
-        if attention is not None:
-            events.append(
-                _fallback_event(
-                    event_type="attention",
-                    observed_at=observed_at,
-                    frame_id=frame_id,
-                    track=attention,
-                    from_region="",
-                    to_region=_region(_center(attention["bbox"])),
-                    distance=0.0,
-                )
-            )
 
         objects = [_track_object(track) for track in sorted(active_tracks, key=lambda item: str(item["trackId"]))]
         summary = _fallback_summary(objects, events)
@@ -815,6 +823,7 @@ class _FallbackRealtimeVisionSimulator:
                 "relationships": [],
                 "attention": _track_object(attention) if attention else {},
                 "summary": summary,
+                "eventSummary": _event_summary(events),
                 "metadata": {"frameId": frame_id, "realtime": True, "simulator": "eihead_local", "trackCount": len(objects)},
             },
             "sceneGraphSummary": summary,
@@ -995,6 +1004,7 @@ def _track_object(track: Mapping[str, Any]) -> dict[str, Any]:
         "center": {"x": round(center[0], 3), "y": round(center[1], 3)},
         "region": _region(center),
         "missingFrames": int(track.get("missing_frames", 0)),
+        "temporalState": str(track.get("temporalState") or "stationary"),
     }
     extras = track.get("extras")
     if isinstance(extras, Mapping):
@@ -1040,6 +1050,11 @@ def _fallback_summary(objects: list[dict[str, Any]], events: list[dict[str, Any]
     observed = ", ".join(sorted({str(item.get("label")) for item in objects})) if objects else "empty scene"
     event_types = sorted({str(event.get("eventType")) for event in events if event.get("eventType")})
     return f"Observed {observed}; realtime events: {', '.join(event_types) if event_types else 'none'}"
+
+
+def _event_summary(events: list[Mapping[str, Any]]) -> str:
+    event_types = sorted({str(event.get("eventType")) for event in events if event.get("eventType")})
+    return ", ".join(event_types)
 
 
 def _fallback_scene_id(frame_id: str, observed_at: str, objects: list[dict[str, Any]]) -> str:

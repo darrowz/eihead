@@ -8,7 +8,7 @@ from eihead.protocol import ActionExecuted, MoveHeadAction
 from eihead.runtime.app import HeadRuntimeApp
 
 
-FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "eiprotocol"
+FIXTURE_DIR = (Path(__file__).resolve().parents[2] / "eiprotocol" / "tests" / "fixtures" / "eiprotocol").resolve()
 
 
 def _fixture(name: str) -> dict[str, Any]:

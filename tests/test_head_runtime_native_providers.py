@@ -74,11 +74,8 @@ def test_from_config_path_reports_native_provider_boundaries_without_hardware(tm
         ),
         encoding="utf-8",
     )
-    captured: dict[str, str] = {}
-
     def fake_factory(path: str) -> FakeBodyRuntime:
-        captured["body_config_path"] = path
-        return FakeBodyRuntime()
+        raise AssertionError(f"legacy factory should not be called: {path}")
 
     probe = FakeNativeProbe()
 
@@ -92,8 +89,7 @@ def test_from_config_path_reports_native_provider_boundaries_without_hardware(tm
     snapshot = runtime.snapshot()
     native_providers = snapshot["native_providers"]
 
-    assert captured["body_config_path"] == body_config_path.as_posix()
-    assert snapshot["body_runtime"]["node_id"] == "honjia-native-test"
+    assert snapshot["body_runtime"] == {}
     assert native_providers["eye"] == {
         "status": "wired",
         "provider": "fake-eye-adapter",
@@ -113,7 +109,7 @@ def test_injected_neck_adapter_can_be_reported_as_wired_by_probe(tmp_path: Path)
     config_path.write_text("node_id: honjia-native-test\n", encoding="utf-8")
 
     def fake_factory(path: str) -> FakeBodyRuntime:
-        return FakeBodyRuntime()
+        raise AssertionError(f"legacy factory should not be called: {path}")
 
     def probe(provider_name: str, *, config: Any, environ: dict[str, str]) -> dict[str, object]:
         if provider_name == "neck":
