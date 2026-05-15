@@ -20,6 +20,13 @@ devices:
   hailo:
     path: /dev/hailo0
     hef_path: /usr/share/hailo-models/yolov5s_personface_h8l.hef
+    postprocess_so_path: /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so
+    postprocess_config_path: /usr/share/hailo-models/yolov5_personface.json
+    postprocess_function: filter
+    score_threshold: 0.3
+    labels:
+      - person
+      - face
   i2c:
     path: /dev/i2c-1
     bus: 1

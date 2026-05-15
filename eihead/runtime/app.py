@@ -20,6 +20,12 @@ from .native_providers import (
     normalize_native_provider_statuses,
 )
 from .composition import build_native_capability_probe
+from .native_services import (
+    EyeAdapterFactory,
+    build_native_neck_servo_adapter,
+    build_native_provider_services,
+    build_native_voice_status,
+)
 
 DEFAULT_CONFIG_PATH = "config/eibrain.yaml"
 DEFAULT_BODY_RUNTIME_DELEGATE = "eihead.native_runtime"
@@ -65,7 +71,10 @@ class HeadRuntimeApp:
     neck_servo_adapter: Any | None = field(default=None, repr=False)
     neck_pan_state: PanNeckState = field(default_factory=PanNeckState, repr=False)
     native_providers: Mapping[str, Any] | None = field(default=None, repr=False)
+    native_voice_status: Mapping[str, Any] | None = field(default=None, repr=False)
     _ptz_last_target_angle: int | None = field(default=None, init=False, repr=False)
+    _last_neck_plan: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _last_neck_servo: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _native_provider_services: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -95,20 +104,34 @@ class HeadRuntimeApp:
         native_provider_probe: NativeProviderProbe | None = None,
         native_environ: Mapping[str, str] | None = None,
         neck_servo_adapter: Any | None = None,
+        native_eye_adapter_factory: EyeAdapterFactory | None = None,
     ) -> "HeadRuntimeApp":
         _ = body_runtime_factory
         native_config = _load_optional_eihead_config(str(path))
+        if neck_servo_adapter is None:
+            neck_servo_adapter = build_native_neck_servo_adapter(native_config)
+        native_provider_statuses = build_native_provider_statuses(
+            config=native_config,
+            environ=native_environ,
+            probe=native_provider_probe,
+            neck_servo_adapter=neck_servo_adapter,
+        )
+        native_provider_services = build_native_provider_services(
+            native_config,
+            config_path=str(path),
+            eye_adapter_factory=native_eye_adapter_factory,
+        )
+        native_providers: dict[str, Any] = {
+            **native_provider_statuses,
+            **native_provider_services,
+        }
         return cls(
             body_runtime=None,
             config_path=str(path),
             delegate_name=DEFAULT_BODY_RUNTIME_DELEGATE,
             neck_servo_adapter=neck_servo_adapter,
-            native_providers=build_native_provider_statuses(
-                config=native_config,
-                environ=native_environ,
-                probe=native_provider_probe,
-                neck_servo_adapter=neck_servo_adapter,
-            ),
+            native_providers=native_providers,
+            native_voice_status=build_native_voice_status(native_config),
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -198,6 +221,9 @@ class HeadRuntimeApp:
     def voice_status(self) -> Mapping[str, Any] | Any | None:
         """Return native voice diagnostics when available, else a body snapshot fallback."""
 
+        if isinstance(self.native_voice_status, Mapping):
+            return dict(self.native_voice_status)
+
         for attr_name in (
             "voice_realtime",
             "voice_status",
@@ -229,6 +255,42 @@ class HeadRuntimeApp:
 
     def voice_realtime(self) -> Mapping[str, Any] | Any | None:
         return self.voice_status()
+
+    def neck_status(self) -> Mapping[str, Any]:
+        """Return native pan/servo diagnostics for the monitor."""
+
+        servo_status = self._neck_servo_status()
+        provider_status = self._native_provider_statuses().get("neck", {})
+        requested_status = _string_or_default(provider_status.get("status"), "")
+        if servo_status.get("status") in {"unavailable", "error", "invalid", "unsupported"}:
+            status = "degraded"
+        elif requested_status in {"wired", "degraded", "unavailable", "unknown"}:
+            status = requested_status
+        else:
+            status = "wired" if self.neck_servo_adapter is not None else "degraded"
+
+        payload: dict[str, Any] = {
+            "status": status,
+            "pan": self.neck_pan_state.to_dict(),
+            "servo": servo_status,
+            "axis_support": {
+                "pan": {"supported": True, "status": "supported"},
+                "yaw": {"supported": True, "status": "supported"},
+                "tilt": {
+                    "supported": False,
+                    "status": "unsupported",
+                    "reason": "tilt_not_supported",
+                },
+            },
+        }
+        if self._last_neck_plan is not None:
+            payload["neck_plan"] = dict(self._last_neck_plan)
+        if self._last_neck_servo is not None:
+            payload["neck_servo"] = dict(self._last_neck_servo)
+        return payload
+
+    def neck_realtime(self) -> Mapping[str, Any]:
+        return self.neck_status()
 
     def recent_events(self, limit: int | None = None) -> list[dict[str, Any]]:
         return self.event_journal.recent(limit)
@@ -454,9 +516,15 @@ class HeadRuntimeApp:
             self.neck_pan_state,
         )
         self.neck_pan_state = PanNeckState.from_dict(plan.get("state", {}))
+        self._last_neck_plan = dict(plan)
 
         if not bool(plan.get("success")):
             reason = _string_or_default(plan.get("reason"), _string_or_default(plan.get("status"), "invalid"))
+            self._last_neck_servo = {
+                "status": _string_or_default(plan.get("status"), "invalid"),
+                "success": False,
+                "reason": reason,
+            }
             return self._action_outcome(
                 action_id=action_id,
                 action_type="move_head",
@@ -472,6 +540,11 @@ class HeadRuntimeApp:
 
         apply_plan = getattr(self.neck_servo_adapter, "apply_plan", None)
         if not callable(apply_plan):
+            self._last_neck_servo = {
+                "status": "unavailable",
+                "success": False,
+                "reason": "neck_servo_adapter_unavailable",
+            }
             return self._action_outcome(
                 action_id=action_id,
                 action_type="move_head",
@@ -488,6 +561,12 @@ class HeadRuntimeApp:
         try:
             servo_outcome = apply_plan(plan)
         except Exception as exc:  # pragma: no cover - exercised by integration when hardware fails.
+            self._last_neck_servo = {
+                "status": "error",
+                "success": False,
+                "reason": "neck_servo_adapter_error",
+                "error": str(exc),
+            }
             return self._action_outcome(
                 action_id=action_id,
                 action_type="move_head",
@@ -506,6 +585,7 @@ class HeadRuntimeApp:
             servo_details = dict(servo_outcome)
         else:
             servo_details = _serialize_outcome(servo_outcome)
+        self._last_neck_servo = dict(servo_details)
         servo_status = _string_or_default(servo_details.get("status"), "")
 
         if servo_status == "ok":
@@ -641,6 +721,40 @@ class HeadRuntimeApp:
                 neck_servo_adapter=self.neck_servo_adapter,
             )[provider_name]
         return statuses
+
+    def _neck_servo_status(self) -> dict[str, Any]:
+        adapter = self.neck_servo_adapter
+        if adapter is None:
+            return {
+                "status": "unavailable",
+                "available": False,
+                "reason": "neck_servo_adapter_missing",
+            }
+        status_fn = getattr(adapter, "status", None)
+        if callable(status_fn):
+            try:
+                payload = status_fn()
+            except Exception as exc:  # pragma: no cover - hardware dependent.
+                return {
+                    "status": "error",
+                    "available": False,
+                    "reason": "neck_servo_status_error",
+                    "error": str(exc),
+                }
+            if isinstance(payload, Mapping):
+                return dict(payload)
+        if callable(getattr(adapter, "apply_plan", None)):
+            return {
+                "status": "ready",
+                "available": True,
+                "reason": "neck_servo_adapter_ready",
+                "hardware_verified": False,
+            }
+        return {
+            "status": "unavailable",
+            "available": False,
+            "reason": "neck_servo_adapter_unavailable",
+        }
 
     def _normalize_action(
         self,

@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
-from .eivoice_runtime import build_eivoice_runtime_panel
+from .eivoice_runtime import build_eivoice_runtime_panel, eivoice_runtime_status_from_app
 from .neck import build_neck_diagnostics_from_app
 from .realtime_vision import realtime_vision_payload_from_app
 from .voice import build_voice_diagnostics_from_app
@@ -460,25 +460,7 @@ def _eivoice_runtime_payload(app: Any) -> JsonObject:
 
 
 def _eivoice_runtime_status_from_app(app: Any) -> JsonObject:
-    for attr_name in (
-        "eivoice_runtime_status",
-        "eivoice_runtime",
-        "latest_eivoice_runtime_status",
-        "latest_eivoice_runtime",
-    ):
-        if not hasattr(app, attr_name):
-            continue
-        source = getattr(app, attr_name)
-        payload = source() if callable(source) else source
-        if isinstance(payload, Mapping):
-            return dict(payload)
-
-    status = _call_json_object(app, "status")
-    for key in ("eivoice_runtime", "eivoiceRuntime", "voice_runtime", "runtime_status"):
-        payload = status.get(key)
-        if isinstance(payload, Mapping):
-            return dict(payload)
-    return {}
+    return eivoice_runtime_status_from_app(app)
 
 
 def _coerce_action_log(raw_log: Any) -> tuple[list[JsonObject], JsonObject]:

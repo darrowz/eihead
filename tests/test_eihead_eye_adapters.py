@@ -43,11 +43,27 @@ def test_gstreamer_hailo_config_exposes_realtime_pipeline_fields() -> None:
     assert fields["caps"] == "video/x-raw,width=1280,height=720,framerate=60/1"
     assert fields["source"].startswith("v4l2src")
     assert fields["inference"].startswith("hailonet")
+    assert "device=/dev/hailo1" not in fields["inference"]
     assert "/opt/models/face.hef" in fields["inference"]
     assert "/dev/video2" in pipeline
-    assert "/dev/hailo1" in pipeline
+    assert "device=/dev/hailo1" not in pipeline
     assert "filesrc" not in pipeline
     assert "compat_static_frame" not in pipeline
+
+
+def test_gstreamer_hailo_pipeline_uses_device_id_only_when_configured() -> None:
+    config = GStreamerHailoRealtimeConfig(
+        hailo_device="/dev/hailo0",
+        hailo_device_id="0000:01:00.0",
+        hef_path="/opt/models/personface.hef",
+    )
+
+    fields = config.pipeline_fields()
+    pipeline = config.build_pipeline_description()
+
+    assert "device-id=0000:01:00.0" in fields["inference"]
+    assert "device=/dev/hailo0" not in fields["inference"]
+    assert "device-id=0000:01:00.0" in pipeline
 
 
 def test_device_paths_are_configured_without_touching_hardware() -> None:
@@ -395,6 +411,7 @@ def test_native_gstreamer_adapter_wires_reader_and_hailo_metadata_parser() -> No
     assert status.status == "ok"
     assert payload["devices"] == {"camera": "/dev/video0", "hailo": "/dev/hailo0"}
     assert payload["pipeline"]["inference"].startswith("hailonet")
+    assert "device=/dev/hailo0" not in payload["pipeline"]["inference"]
     assert "/opt/models/personface.hef" in payload["pipeline"]["inference"]
     assert "/opt/hailo/personface.json" in payload["pipeline"]["postprocess"]
     assert payload["readiness_message"] == "realtime adapter is wired"

@@ -25,6 +25,7 @@ class GStreamerAppSinkFrameReader:
         *,
         camera_device: str = "/dev/video0",
         hailo_device: str = "/dev/hailo0",
+        hailo_device_id: str = "",
         width: int = 640,
         height: int = 480,
         framerate: int = 30,
@@ -39,6 +40,7 @@ class GStreamerAppSinkFrameReader:
     ) -> None:
         self.camera_device = camera_device
         self.hailo_device = hailo_device
+        self.hailo_device_id = str(hailo_device_id)
         self.width = int(width)
         self.height = int(height)
         self.framerate = int(framerate)
@@ -118,7 +120,9 @@ class GStreamerAppSinkFrameReader:
             }
 
     def pipeline_text(self) -> str:
-        hailo_text = ["hailonet", f"device={self.hailo_device}"]
+        hailo_text = ["hailonet"]
+        if self.hailo_device_id:
+            hailo_text.append(f"device-id={self.hailo_device_id}")
         if self.hef_path:
             hailo_text.append(f"hef-path={self.hef_path}")
         hailo_clause = " ".join(hailo_text)

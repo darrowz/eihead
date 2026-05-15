@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from eihead.runtime.app import HeadRuntimeApp
+from eihead.monitoring.neck import build_neck_diagnostics_from_app
+from eihead.monitoring.voice import build_voice_diagnostics_from_app
 from eihead.runtime.native_providers import build_native_provider_statuses
 
 
@@ -49,6 +51,32 @@ class FakeEyeService:
             "stream_ready": True,
             "not_wired": False,
             "readiness_message": "camera and hailo ready",
+        }
+
+
+class FakeNativeEyeAdapter:
+    def __init__(self) -> None:
+        self.poll_count = 0
+
+    def status(self) -> dict[str, object]:
+        return self._payload()
+
+    def poll(self) -> dict[str, object]:
+        self.poll_count += 1
+        return self._payload()
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.eye.realtime_status.v1",
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "backend": "gstreamer_hailo",
+            "stream_ready": True,
+            "not_wired": False,
+            "last_frame_id": "native-1",
+            "camera_device": "/dev/video42",
+            "hailo_device": "/dev/hailo0",
         }
 
 
@@ -245,3 +273,115 @@ def test_native_eye_service_status_feeds_status_and_capability_readiness() -> No
     assert capabilities["hailo"]["details"]["native_stream_ready"] is True
     assert capabilities["vision_backend"]["details"]["native_backend"] == "gstreamer_hailo"
     assert capabilities["vision_backend"]["details"]["native_hailo_device"] == "/dev/hailo0"
+
+
+def test_from_config_path_wires_realtime_eye_service_from_honjia_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "eihead.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia",
+                "devices:",
+                "  camera:",
+                "    path: /dev/video42",
+                "  hailo:",
+                "    path: /dev/hailo0",
+                "    hef_path: /opt/models/personface.hef",
+                "    postprocess_so_path: /opt/hailo/libpost.so",
+                "    postprocess_config_path: /opt/hailo/personface.json",
+                "    postprocess_function: filter",
+                "    score_threshold: 0.45",
+                "    labels: [person, face]",
+                "capabilities:",
+                "  software:",
+                "    vision_backend:",
+                "      enabled: true",
+                "      backend: hailo",
+                "      limits:",
+                "        realtime: true",
+                "        max_fps: 15",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def adapter_factory(config: object) -> FakeNativeEyeAdapter:
+        captured["config"] = config
+        return FakeNativeEyeAdapter()
+
+    runtime = HeadRuntimeApp.from_config_path(
+        str(config_path),
+        native_eye_adapter_factory=adapter_factory,
+        native_environ={},
+    )
+
+    gstreamer_config = captured["config"]
+    assert getattr(gstreamer_config, "camera_device") == "/dev/video42"
+    assert getattr(gstreamer_config, "hailo_device") == "/dev/hailo0"
+    assert getattr(gstreamer_config, "hef_path") == "/opt/models/personface.hef"
+    assert getattr(gstreamer_config, "postprocess_config_path") == "/opt/hailo/personface.json"
+    assert getattr(gstreamer_config, "labels") == ("person", "face")
+    assert getattr(gstreamer_config, "score_threshold") == 0.45
+    assert getattr(gstreamer_config, "framerate") == 15
+
+    payload = runtime.vision_realtime()
+    assert payload is not None
+    assert payload["status"] == "tracking"
+    assert payload["last_frame_id"] == "native-1"
+    assert payload["devices"]["camera_device"] == "/dev/video42"
+
+
+def test_head_runtime_exposes_native_neck_status_for_monitoring() -> None:
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeBodyRuntime(),
+        native_providers={"neck": {"status": "wired", "provider": "fake-neck"}},
+        neck_servo_adapter=FakeNeckAdapter(),
+    )
+
+    payload = build_neck_diagnostics_from_app(runtime, timestamp=10.0)
+
+    assert payload["status"] == "wired"
+    assert payload["not_wired"] is False
+    assert payload["current_angle"] == 90
+    assert payload["target_angle"] == 90
+    assert payload["axis_support"]["pan"]["supported"] is True
+    assert payload["axis_support"]["tilt"]["reason"] == "tilt_not_supported"
+
+
+def test_from_config_path_exposes_degraded_voice_diagnostics_from_honjia_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "eihead.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia",
+                "devices:",
+                "  microphone:",
+                "    path: /dev/snd",
+                "    device: plughw:CARD=U4K,DEV=0",
+                "  speaker:",
+                "    device: default",
+                "capabilities:",
+                "  software:",
+                "    asr:",
+                "      enabled: true",
+                "      provider: sherpa_onnx",
+                "      model: sherpa-onnx-streaming",
+                "    tts:",
+                "      enabled: true",
+                "      provider: minimax",
+                "      model: speech-2.8-hd",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = HeadRuntimeApp.from_config_path(str(config_path), native_environ={})
+    payload = build_voice_diagnostics_from_app(runtime, timestamp=11.0)
+
+    assert payload["status"] == "degraded"
+    assert payload["not_wired"] is False
+    assert payload["source"] in {"voice_realtime", "voice_status"}
+    assert payload["ear"]["provider"] == "sherpa_onnx"
+    assert payload["mouth"]["backend"] == "minimax"
+    assert payload["realtime_audio"]["enabled"] is False

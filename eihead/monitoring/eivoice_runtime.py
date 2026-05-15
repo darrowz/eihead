@@ -90,6 +90,56 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def eivoice_runtime_status_from_app(app: Any) -> dict[str, Any]:
+    """Read EIVoice runtime status from app hooks or nested status payloads."""
+
+    for attr_name in (
+        "eivoice_runtime_status",
+        "eivoice_runtime",
+        "latest_eivoice_runtime_status",
+        "latest_eivoice_runtime",
+    ):
+        if not hasattr(app, attr_name):
+            continue
+        source = getattr(app, attr_name)
+        payload = source() if callable(source) else source
+        if isinstance(payload, Mapping):
+            return dict(payload)
+
+    status_fn = getattr(app, "status", None)
+    if callable(status_fn):
+        try:
+            status = status_fn()
+        except Exception:
+            status = {}
+        if isinstance(status, Mapping):
+            for key in ("eivoice_runtime", "eivoiceRuntime", "voice_runtime", "runtime_status"):
+                payload = status.get(key)
+                if isinstance(payload, Mapping):
+                    return dict(payload)
+            body_runtime = status.get("body_runtime")
+            if isinstance(body_runtime, Mapping):
+                for key in ("eivoice_runtime", "eivoiceRuntime", "voice_runtime", "runtime_status"):
+                    payload = body_runtime.get(key)
+                    if isinstance(payload, Mapping):
+                        return dict(payload)
+
+    body_runtime = getattr(app, "body_runtime", None)
+    for attr_name in (
+        "eivoice_runtime_status",
+        "eivoice_runtime",
+        "latest_eivoice_runtime_status",
+        "latest_eivoice_runtime",
+    ):
+        if not hasattr(body_runtime, attr_name):
+            continue
+        source = getattr(body_runtime, attr_name)
+        payload = source() if callable(source) else source
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    return {}
+
+
 def _normalize_queue(name: str, runtime: Mapping[str, Any]) -> dict[str, Any]:
     queue = _queue_source(name, runtime)
     depth = _number(

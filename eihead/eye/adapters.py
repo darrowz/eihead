@@ -37,6 +37,7 @@ class GStreamerHailoRealtimeConfig:
 
     camera_device: str = "/dev/video0"
     hailo_device: str = "/dev/hailo0"
+    hailo_device_id: str = ""
     width: int = 640
     height: int = 480
     framerate: int = 30
@@ -61,7 +62,9 @@ class GStreamerHailoRealtimeConfig:
     def pipeline_fields(self) -> dict[str, str]:
         """Return a deterministic pipeline description without importing Gst."""
 
-        inference_parts = ["hailonet", f"device={self.hailo_device}"]
+        inference_parts = ["hailonet"]
+        if self.hailo_device_id:
+            inference_parts.append(f"device-id={self.hailo_device_id}")
         if self.hef_path:
             inference_parts.append(f"hef-path={self.hef_path}")
         postprocess_parts = ["hailofilter", "qos=false"]
@@ -307,6 +310,7 @@ class GStreamerHailoRealtimeAdapter:
         native_reader = frame_reader_factory(
             camera_device=adapter_config.camera_device,
             hailo_device=adapter_config.hailo_device,
+            hailo_device_id=adapter_config.hailo_device_id,
             width=adapter_config.width,
             height=adapter_config.height,
             framerate=adapter_config.framerate,

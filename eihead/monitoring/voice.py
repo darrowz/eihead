@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
+from eihead.monitoring.eivoice_runtime import build_eivoice_runtime_panel, eivoice_runtime_status_from_app
 from eihead.monitoring.voice_readiness import build_voice_chain_readiness
 from eihead.protocol import serialize_message
 
@@ -31,38 +32,45 @@ VOICE_RUNTIME_ATTRS = (
 def build_voice_diagnostics_from_app(app: Any, timestamp: float) -> dict[str, Any]:
     """Read voice diagnostics from runtime hooks or a body snapshot."""
 
-    first_non_wired_payload: dict[str, Any] | None = None
+    candidates: list[dict[str, Any]] = []
     for attr_name in VOICE_RUNTIME_ATTRS:
         if not hasattr(app, attr_name):
             continue
         source = getattr(app, attr_name)
         raw_payload = _resolve_voice_candidate(source() if callable(source) else source)
-        payload = _build_voice_payload(
-            raw_payload,
-            timestamp=timestamp,
-            source=attr_name,
-            wired=raw_payload is not None,
+        candidates.append(
+            _build_voice_payload(
+                raw_payload,
+                timestamp=timestamp,
+                source=attr_name,
+                wired=raw_payload is not None,
+            )
         )
-        if payload.get("wired") is True:
-            return payload
-        if first_non_wired_payload is None:
-            first_non_wired_payload = payload
 
     snapshot_payload = _voice_payload_from_snapshot(app)
     if snapshot_payload is not None:
-        payload = _build_voice_payload(
-            snapshot_payload,
-            timestamp=timestamp,
-            source="snapshot",
-            wired=True,
+        candidates.append(
+            _build_voice_payload(
+                snapshot_payload,
+                timestamp=timestamp,
+                source="snapshot",
+                wired=True,
+            )
         )
-        if payload.get("wired") is True:
-            return payload
-        if first_non_wired_payload is None:
-            first_non_wired_payload = payload
 
-    if first_non_wired_payload is not None:
-        return first_non_wired_payload
+    eivoice_payload = _voice_payload_from_eivoice_runtime(eivoice_runtime_status_from_app(app))
+    if eivoice_payload is not None:
+        candidates.append(
+            _build_voice_payload(
+                eivoice_payload,
+                timestamp=timestamp,
+                source="eivoice_runtime",
+                wired=True,
+            )
+        )
+
+    if candidates:
+        return max(candidates, key=_voice_payload_rank)
 
     return _build_voice_payload(None, timestamp=timestamp, source=None, wired=False)
 
@@ -212,6 +220,117 @@ def _voice_payload_from_snapshot(app: Any) -> dict[str, Any] | None:
         if mouth is not None:
             payload["mouth"] = mouth
     return payload or None
+
+
+def _voice_payload_from_eivoice_runtime(status: Mapping[str, Any]) -> dict[str, Any] | None:
+    runtime = _json_mapping(status)
+    if not runtime:
+        return None
+    panel = build_eivoice_runtime_panel(dict(runtime))
+    audio_frontend = _json_mapping(panel.get("audioFrontend")) or {}
+    transport = _json_mapping(panel.get("transport")) or {}
+    warnings = [str(item) for item in panel.get("warnings", []) if item]
+    asr = _json_mapping(runtime.get("asr") or runtime.get("asr_status") or runtime.get("recognition")) or {}
+    mouth = _mouth_payload_from_eivoice_runtime(runtime)
+    mouth_missing = mouth is None
+    if mouth is None:
+        mouth = {
+            "status": "not_wired",
+            "backend": "",
+            "readiness_message": "mouth playback diagnostics are missing from eivoice runtime",
+            "tts_playback": {
+                "status": "not_wired",
+                "reason": "mouth_playback_diagnostics_missing",
+            },
+        }
+    capture_status = "degraded" if panel.get("health") == "degraded" else "ready"
+    ear_status = _first_text(asr.get("status"), "ready")
+    if panel.get("health") == "degraded":
+        ear_status = "degraded"
+    readiness_messages = warnings or ["eivoice runtime state is present"]
+    if mouth_missing:
+        readiness_messages.append("mouth playback diagnostics are missing")
+    return {
+        "eivoice_runtime": {
+            "state": panel.get("state"),
+            "conversation_state": panel.get("conversationState"),
+            "health": panel.get("health"),
+            "warnings": warnings,
+            "queues": panel.get("queues"),
+            "transport": transport,
+            "audio_frontend": audio_frontend,
+        },
+        "ear": {
+            "status": ear_status,
+            "provider": _first_text(asr.get("provider"), asr.get("backend")),
+            "readiness_message": "; ".join(readiness_messages),
+            "capture": {
+                "status": capture_status,
+                "details": {
+                    "devices": audio_frontend.get("devices"),
+                    "audio_format": audio_frontend.get("audioFormat"),
+                    "aec": audio_frontend.get("aec"),
+                    "ns": audio_frontend.get("ns"),
+                    "vad": audio_frontend.get("vad"),
+                    "loopback": audio_frontend.get("loopback"),
+                },
+            },
+            "asr": {
+                "status": ear_status,
+                "details": asr,
+            },
+        },
+        "mouth": mouth,
+        "voice_dialogue": {
+            "enabled": True,
+            "running": panel.get("state") in {"running", "conversation"},
+            "phase": panel.get("conversationState"),
+            "last_status": panel.get("state"),
+            "readiness_message": "; ".join(readiness_messages),
+        },
+        "realtime_audio": {
+            "enabled": True,
+            "running": transport.get("state") == "connected" and panel.get("state") in {"running", "conversation"},
+            "transport": transport,
+        },
+        "streaming": {
+            "state": "running" if transport.get("state") == "connected" else transport.get("state"),
+            "transport": transport,
+        },
+        "readiness_message": "; ".join(readiness_messages),
+    }
+
+
+def _mouth_payload_from_eivoice_runtime(runtime: Mapping[str, Any]) -> dict[str, Any] | None:
+    for key in ("mouth", "mouth_status", "tts_playback", "playback"):
+        raw_payload = runtime.get(key)
+        payload = _json_mapping(raw_payload) if isinstance(raw_payload, Mapping) else None
+        if payload:
+            if key in {"tts_playback", "playback"}:
+                return {
+                    "status": _first_text(payload.get("status"), payload.get("state")),
+                    "backend": _first_text(payload.get("backend"), payload.get("provider")),
+                    "model": _first_text(payload.get("model")),
+                    "voice_id": _first_text(payload.get("voice_id"), payload.get("voiceId")),
+                    "tts_playback": payload,
+                }
+            return payload
+    return None
+
+
+def _voice_payload_rank(payload: Mapping[str, Any]) -> tuple[int, int]:
+    status = _normalized_text(payload.get("status"))
+    if payload.get("wired") is True and status == "wired":
+        return (400, 0)
+    if payload.get("not_wired") is False and status in {"degraded", "stale"}:
+        return (300, 0)
+    if payload.get("wired") is True:
+        return (250, 0)
+    if payload.get("not_wired") is False:
+        return (200, 0)
+    if payload.get("observation") is not None:
+        return (100, 0)
+    return (0, 0)
 
 
 def _normalize_ear(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:

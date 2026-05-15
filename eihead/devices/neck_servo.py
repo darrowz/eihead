@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import math
+import os
 from typing import Any, Protocol
 
 
@@ -22,6 +23,20 @@ class NeckServoCommandAdapter:
     def __init__(self, driver: ServoDriver, *, servo_id: int = 1) -> None:
         self._driver = driver
         self.servo_id = int(servo_id)
+
+    def status(self) -> dict[str, Any]:
+        driver_status = _driver_status(self._driver)
+        driver_available = driver_status.get("available")
+        driver_status_text = str(driver_status.get("status", "") or "").strip().lower()
+        available = driver_available is not False and driver_status_text not in {"unavailable", "error", "missing"}
+        return {
+            "status": "ready" if available else "unavailable",
+            "available": available,
+            "reason": "neck_servo_adapter_ready" if available else str(driver_status.get("reason") or "driver_unavailable"),
+            "servo_id": self.servo_id,
+            "hardware_verified": False,
+            "driver": driver_status,
+        }
 
     def apply_decision(self, decision: Any) -> dict[str, Any]:
         angle = int(decision.angle)
@@ -102,12 +117,83 @@ class UnavailableNeckServoCommandAdapter:
             "angle": _plan_angle(plan),
         }
 
+    def status(self) -> dict[str, Any]:
+        return {
+            "status": "unavailable",
+            "available": False,
+            "reason": self.reason,
+            "node_id": self.node_id,
+            "hardware_verified": False,
+        }
+
+
+class RaspbotServoDriver:
+    """Minimal native Raspbot I2C servo driver for honjia pan control."""
+
+    def __init__(
+        self,
+        *,
+        bus: int = 1,
+        addr: int = 0x2B,
+        servo_id: int = 1,
+        enabled: bool = True,
+        mock: bool = False,
+    ) -> None:
+        self.bus = int(bus)
+        self.addr = int(addr)
+        self.servo_id = int(servo_id)
+        self.enabled = bool(enabled)
+        self.mock = bool(mock)
+        self.device_path = f"/dev/i2c-{self.bus}"
+        self.last_command: tuple[int, int] | None = None
+
+    def status(self) -> dict[str, Any]:
+        device_exists = os.path.exists(self.device_path)
+        return {
+            "status": "ready" if self.enabled and (device_exists or self.mock) else "unavailable",
+            "available": self.enabled and (device_exists or self.mock),
+            "reason": "raspbot_i2c_ready"
+            if self.enabled and (device_exists or self.mock)
+            else "missing_i2c_device",
+            "bus": self.bus,
+            "addr": self.addr,
+            "servo_id": self.servo_id,
+            "device": self.device_path,
+            "device_exists": device_exists,
+            "mock": self.mock,
+            "hardware_verified": False,
+        }
+
+    def ctrl_servo(self, angle: int, servo_id: int | None = None) -> list[int]:
+        target_servo = self.servo_id if servo_id is None else int(servo_id)
+        clipped_angle = max(0, min(180, int(angle)))
+        if target_servo == 2 and clipped_angle > 110:
+            clipped_angle = 110
+        self.last_command = (target_servo, clipped_angle)
+        payload = [target_servo & 0xFF, clipped_angle & 0xFF]
+        if self.mock or not self.enabled:
+            return payload
+        if not os.path.exists(self.device_path):
+            raise RuntimeError(f"missing i2c device: {self.device_path}")
+        bus = _open_smbus(self.bus)
+        try:
+            bus.write_i2c_block_data(self.addr, 0x02, payload)
+        finally:
+            close = getattr(bus, "close", None)
+            if callable(close):
+                close()
+        return payload
+
 
 def build_neck_servo_adapter(
     *,
     node_id: str,
     driver: ServoDriver | None = None,
     servo_id: int = 1,
+    bus: int = 1,
+    addr: int = 0x2B,
+    enabled: bool = True,
+    mock: bool = False,
 ) -> NeckServoCommandAdapter | UnavailableNeckServoCommandAdapter:
     """Return a narrow injected-driver adapter only on honjia."""
 
@@ -118,11 +204,37 @@ def build_neck_servo_adapter(
             reason="neck_servo_unavailable_off_honjia",
         )
     if driver is None:
-        return UnavailableNeckServoCommandAdapter(
-            node_id=normalized_node_id,
-            reason="neck_servo_driver_unavailable",
+        driver = RaspbotServoDriver(
+            bus=bus,
+            addr=addr,
+            servo_id=servo_id,
+            enabled=enabled,
+            mock=mock,
         )
     return NeckServoCommandAdapter(driver, servo_id=servo_id)
+
+
+def _open_smbus(bus: int) -> Any:
+    try:
+        import smbus2  # type: ignore
+
+        return smbus2.SMBus(bus)
+    except Exception as smbus2_exc:  # pragma: no cover - depends on honjia packages.
+        try:
+            import smbus  # type: ignore
+
+            return smbus.SMBus(bus)
+        except Exception as smbus_exc:  # pragma: no cover - depends on honjia packages.
+            raise RuntimeError(f"smbus2/smbus unavailable: smbus2={smbus2_exc}; smbus={smbus_exc}") from smbus_exc
+
+
+def _driver_status(driver: ServoDriver) -> dict[str, Any]:
+    status = getattr(driver, "status", None)
+    if callable(status):
+        payload = status()
+        if isinstance(payload, Mapping):
+            return {str(key): _json_safe(value) for key, value in payload.items()}
+    return {"status": "ready", "driver": driver.__class__.__name__}
 
 
 def _plan_angle(plan: Mapping[str, Any]) -> int | None:
@@ -162,6 +274,7 @@ def _json_safe(value: Any) -> Any:
 
 __all__ = [
     "NeckServoCommandAdapter",
+    "RaspbotServoDriver",
     "ServoDriver",
     "UnavailableNeckServoCommandAdapter",
     "build_neck_servo_adapter",

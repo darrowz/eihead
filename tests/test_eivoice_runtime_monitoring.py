@@ -279,6 +279,43 @@ def test_voice_diagnostics_does_not_infer_mouth_status_from_tts_plan_alone() -> 
     assert mouth["text_preview"] == ""
 
 
+def test_voice_diagnostics_uses_eivoice_runtime_when_voice_status_returns_none() -> None:
+    class App:
+        def voice_status(self) -> None:
+            return None
+
+        def status(self) -> dict[str, Any]:
+            return {
+                "eivoice_runtime": {
+                    "state": "running",
+                    "conversation_state": "Conversation",
+                    "audio_frontend": {
+                        "aec": {"enabled": True, "available": True},
+                        "ns": {"enabled": True, "available": True},
+                        "vad": {"enabled": True, "available": True},
+                        "loopback": {"enabled": True, "available": True},
+                        "devices": {"capture": "plughw:CARD=U4K,DEV=0"},
+                    },
+                    "asr": {"enabled": True, "provider": "sherpa_onnx", "status": "ready"},
+                    "transport": {
+                        "transport": "openai_realtime",
+                        "state": "connected",
+                        "heartbeat": {"latency_ms": 24},
+                    },
+                }
+            }
+
+    payload = build_voice_diagnostics_from_app(App(), timestamp=3.0)
+
+    assert payload["source"] == "eivoice_runtime"
+    assert payload["status"] == "degraded"
+    assert payload["not_wired"] is False
+    assert payload["ear"]["provider"] == "sherpa_onnx"
+    assert payload["mouth"]["state"] == "not_wired"
+    assert payload["realtime_audio"]["running"] is True
+    assert payload["observation"]["eivoice_runtime"]["transport"]["state"] == "connected"
+
+
 class RuntimePanelApp:
     def status(self) -> dict[str, Any]:
         return {
