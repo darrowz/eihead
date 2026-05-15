@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from eibrain.protocol.joyinside_voice import audio_chunk
+from eihead.eivoice_runtime.joyinside_voice import audio_chunk
 
 from .asr import StreamingAsrEvent, StreamingAsrSession
 from .core import AudioFrame, EiVoiceRuntimeCore, OpusCodec

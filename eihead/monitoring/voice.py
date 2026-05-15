@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from eibrain.voice.readiness import build_voice_chain_readiness
+from eihead.monitoring.voice_readiness import build_voice_chain_readiness
 from eihead.protocol import serialize_message
 
 
@@ -1066,9 +1066,11 @@ def _voice_chain_readiness_payload(
         keys=("scenarioTargets", "voice_chain_scenarios", "voiceChainScenarios"),
     )
     return build_voice_chain_readiness(
-        explicit=explicit,
-        benchmark=benchmark,
-        scenario_targets=scenario_targets,
+        {
+            "explicit": explicit,
+            "benchmark": benchmark,
+            "scenario_targets": scenario_targets,
+        }
     )
 
 

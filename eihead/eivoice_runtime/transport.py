@@ -13,7 +13,7 @@ from threading import RLock
 from time import monotonic
 from typing import Any, Protocol
 
-from eibrain.protocol.joyinside_voice import JoyInsideVoiceEvent, ping
+from eihead.eivoice_runtime.joyinside_voice import JoyInsideVoiceEvent, ping
 
 from .core import BoundedAudioQueue
 
