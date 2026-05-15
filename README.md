@@ -32,9 +32,9 @@ Native runtime and monitor surface includes:
 
 Voice chain is now in a scheduler-backed functional stage using Realtime
 Cognitive Scheduler for round lifecycle, scheduler status, and interrupt
-visibility. Realtime Cognitive Scheduler compatibility is transitional. It
-provides functional offline/quasi-streaming diagnostics for the closed-loop
-voice diagnostics surface, but it is not hardware-verified real streaming.
+visibility. It provides functional offline/quasi-streaming diagnostics for the
+closed-loop voice diagnostics surface, but it is not hardware-verified real
+streaming.
 The closed-loop voice diagnostics are functional offline/quasi-streaming diagnostics,
 not hardware-verified real streaming or real streaming LLM/TTS.
 It is still functional-not-complete: the loop has not been wired to real
@@ -44,16 +44,13 @@ state visible without presenting missing streaming stages as complete.
 ## Code completion vs cutover
 
 Code-level completion is not honjia cutover completion. In
-`EXPORT_MANIFEST.json`, `code_completion.software_closure` is `complete`, but
-`code_completion.honjia_cutover` is `blocked_by_hardware_validation`.
+`EXPORT_MANIFEST.json`, `cutover_readiness.honjia_cutover` is
+`blocked_by_hardware_validation` and `cutover_readiness.hardware_verified` is
+`false`.
 
-The `software_closure` field lists which Wave 3 P0/P1 software gates are
-complete at code level, which P0/P1 checks still require honjia hardware
-validation, and which legacy shim removals still block any fully detached claim.
-Do not describe this export as fully detached while
-`legacy_body_runtime_detached` or `full_detachment_claim_allowed` is `false`.
-Real cutover still requires recorded honjia parity for realtime eye, pan-only
-neck, ear/mouth audio, services, reboot persistence, and rollback.
+The export is split from legacy packages and does not vendor `eibrain`.
+Real cutover still requires honjia parity for eye, pan-only neck, ear/mouth
+audio, service startup, reboot persistence, and rollback.
 
 The standalone export intentionally includes the native realtime eye adapter and
 monitor payload files:
@@ -98,9 +95,8 @@ python -m pip install -e D:/github/ei-workspace/repos/eiprotocol
 python -m pip install -e D:/github/ei-workspace/repos/eihead
 ```
 
-`EXPORT_MANIFEST.json` also contains `native_completion_gates`. Treat those
-gates as the source of truth for whether eye, neck, ear, mouth, runtime,
-export, and deploy are complete. A module remains transitional or blocked until
+`EXPORT_MANIFEST.json` is the source of truth for whether eye, neck, ear,
+mouth, runtime, export, and deploy are complete. A module remains blocked until
 its gate is verified on honjia; status and monitor payloads must say
 `not_wired`, `unknown`, `degraded`, or `blocked` rather than implying fake
 completion.
@@ -108,15 +104,13 @@ completion.
 ## Cutover readiness and fake completion
 
 `EXPORT_MANIFEST.json` contains `cutover_readiness`, a machine-readable summary
-for cutover review. It lists `native_provider_modules`, `monitor_endpoints`, and
-`legacy_shim_policy` so reviewers can tell native boundaries from transitional
-compatibility.
+for cutover review. It lists readiness fields and boundaries so reviewers can
+tell native ownership from runtime status.
 
 How to judge fake completion:
 - If `cutover_readiness.hardware_verified` is `false`, the hardware has not been verified on honjia and the export remains blocked/transitional even if local tests or static fixtures pass.
-- If `legacy_shim_policy.legacy_body_runtime_detached` is `false`, the export
-  still carries legacy body runtime shims. Those paths must stay explicitly
-  marked as transitional shims and must not be described as fully detached.
+- If `cutover_readiness.legacy_body_runtime_detached` is `false`, the export
+  is still awaiting legacy boundary removal and should remain blocked.
 - Monitor endpoints are readiness probes, not proof of completion. A response
   is only acceptable when it shows real data or explicit `not_wired`, `unknown`,
   `degraded`, or `blocked` state for missing hardware or unwired stages.
