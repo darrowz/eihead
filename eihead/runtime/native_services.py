@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+import json
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any, Callable, Mapping
 
 from eihead.devices.neck_servo import build_neck_servo_adapter
-from eihead.eye import GStreamerHailoRealtimeAdapter, GStreamerHailoRealtimeConfig, RealtimeEyeService
+from eihead.eye import GStreamerHailoRealtimeConfig, RealtimeEyeService
 
 
 EyeAdapterFactory = Callable[[GStreamerHailoRealtimeConfig], Any]
@@ -38,12 +42,106 @@ def build_realtime_eye_service(
     if not _is_honjia_config(config) or not _vision_realtime_enabled(config):
         return None
     gstreamer_config = gstreamer_hailo_config_from_eihead_config(config, config_path=config_path)
-    adapter = (
-        adapter_factory(gstreamer_config)
-        if adapter_factory is not None
-        else GStreamerHailoRealtimeAdapter.from_native_gstreamer(gstreamer_config)
-    )
+    adapter = adapter_factory(gstreamer_config) if adapter_factory is not None else SafeSubprocessEyeAdapter(gstreamer_config)
     return RealtimeEyeService(adapter=adapter)
+
+
+class SafeSubprocessEyeAdapter:
+    """Poll native GStreamer/Hailo in a child process so plugin crashes do not kill the monitor."""
+
+    def __init__(
+        self,
+        config: GStreamerHailoRealtimeConfig,
+        *,
+        timeout_s: float = 6.0,
+        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    ) -> None:
+        self.config = config
+        self.timeout_s = float(timeout_s)
+        self._runner = runner or subprocess.run
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "schema": "eihead.eye.realtime_status.v1",
+            "mode": self.config.mode,
+            "status": "waiting_for_frame",
+            "backend": self.config.backend,
+            "source": "eihead.runtime.native_services",
+            "placeholder": False,
+            "not_wired": False,
+            "stream_ready": False,
+            "degraded": False,
+            "readiness_message": "native GStreamer/Hailo poll is isolated in a subprocess",
+            **self._diagnostics(),
+        }
+
+    def poll(self) -> dict[str, Any]:
+        config_payload = json.dumps(asdict(self.config), ensure_ascii=True, allow_nan=False)
+        try:
+            completed = self._runner(
+                [sys.executable, "-c", _SUBPROCESS_EYE_POLL_SCRIPT],
+                input=config_payload,
+                text=True,
+                capture_output=True,
+                timeout=self.timeout_s,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return self._degraded(f"native eye subprocess timed out after {self.timeout_s:.1f}s", error=str(exc))
+        except Exception as exc:  # pragma: no cover - host/process dependent.
+            return self._degraded(
+                f"native eye subprocess failed before polling: {exc.__class__.__name__}: {exc}",
+                error=str(exc),
+            )
+        if completed.returncode != 0:
+            reason = _subprocess_error_message(completed)
+            return self._degraded(
+                f"native eye subprocess exited with {completed.returncode}: {reason}",
+                returncode=completed.returncode,
+                stderr=completed.stderr,
+                stdout=completed.stdout,
+            )
+        try:
+            return json.loads(completed.stdout.strip().splitlines()[-1])
+        except Exception as exc:
+            return self._degraded(
+                f"native eye subprocess returned invalid JSON: {exc.__class__.__name__}: {exc}",
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+
+    def _degraded(self, message: str, **details: Any) -> dict[str, Any]:
+        return {
+            "schema": "eihead.eye.realtime_status.v1",
+            "kind": "realtime_vision_observation",
+            "mode": self.config.mode,
+            "status": "degraded",
+            "backend": self.config.backend,
+            "source": "eihead.runtime.native_services",
+            "placeholder": False,
+            "not_wired": False,
+            "stream_ready": False,
+            "degraded": True,
+            "status_reason": "native_eye_subprocess_failed",
+            "degraded_reason": message,
+            "message": message,
+            "detections": [],
+            "detection_boxes": [],
+            "detection_scores": [],
+            "parse_error_count": 0,
+            "parse_errors": [],
+            "subprocess": {str(key): value for key, value in details.items() if value not in (None, "")},
+            **self._diagnostics(),
+        }
+
+    def _diagnostics(self) -> dict[str, Any]:
+        return {
+            "pipeline": self.config.pipeline_fields(),
+            "devices": {
+                "camera": self.config.camera_device,
+                "hailo": self.config.hailo_device,
+            },
+        }
 
 
 def gstreamer_hailo_config_from_eihead_config(
@@ -280,8 +378,33 @@ def _bool(value: Any, default: bool) -> bool:
     return bool(value)
 
 
+def _subprocess_error_message(completed: subprocess.CompletedProcess[str]) -> str:
+    stderr = (completed.stderr or "").strip()
+    stdout = (completed.stdout or "").strip()
+    if stderr:
+        return stderr.splitlines()[-1]
+    if stdout:
+        return stdout.splitlines()[-1]
+    return "no subprocess output"
+
+
+_SUBPROCESS_EYE_POLL_SCRIPT = r"""
+import json
+import sys
+
+from eihead.eye import GStreamerHailoRealtimeAdapter, GStreamerHailoRealtimeConfig
+
+payload = json.loads(sys.stdin.read())
+config = GStreamerHailoRealtimeConfig(**payload)
+adapter = GStreamerHailoRealtimeAdapter.from_native_gstreamer(config)
+status = adapter.poll()
+print(json.dumps(status.to_dict(), ensure_ascii=False, allow_nan=False))
+"""
+
+
 __all__ = [
     "EyeAdapterFactory",
+    "SafeSubprocessEyeAdapter",
     "build_native_neck_servo_adapter",
     "build_native_provider_services",
     "build_native_voice_status",

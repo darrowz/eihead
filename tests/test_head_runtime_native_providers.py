@@ -7,6 +7,8 @@ from eihead.runtime.app import HeadRuntimeApp
 from eihead.monitoring.neck import build_neck_diagnostics_from_app
 from eihead.monitoring.voice import build_voice_diagnostics_from_app
 from eihead.runtime.native_providers import build_native_provider_statuses
+from eihead.runtime.native_services import SafeSubprocessEyeAdapter
+from eihead.eye import GStreamerHailoRealtimeConfig
 
 
 class FakeBodyRuntime:
@@ -330,6 +332,26 @@ def test_from_config_path_wires_realtime_eye_service_from_honjia_config(tmp_path
     assert payload["status"] == "tracking"
     assert payload["last_frame_id"] == "native-1"
     assert payload["devices"]["camera_device"] == "/dev/video42"
+
+
+def test_safe_subprocess_eye_adapter_degrades_without_crashing_parent() -> None:
+    class Completed:
+        returncode = -11
+        stdout = ""
+        stderr = "native plugin crashed"
+
+    adapter = SafeSubprocessEyeAdapter(
+        GStreamerHailoRealtimeConfig(camera_device="/dev/video42"),
+        runner=lambda *_args, **_kwargs: Completed(),
+    )
+
+    payload = adapter.poll()
+
+    assert payload["status"] == "degraded"
+    assert payload["not_wired"] is False
+    assert payload["stream_ready"] is False
+    assert payload["subprocess"]["returncode"] == -11
+    assert payload["pipeline"]["camera_device"] == "/dev/video42"
 
 
 def test_head_runtime_exposes_native_neck_status_for_monitoring() -> None:
