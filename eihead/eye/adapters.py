@@ -82,6 +82,7 @@ class GStreamerHailoRealtimeConfig:
             "source": f"v4l2src device={self.camera_device} do-timestamp=true",
             "caps": f"video/x-raw,width={int(self.width)},height={int(self.height)},framerate={int(self.framerate)}/1",
             "convert": "videoconvert",
+            "inference_caps": "video/x-raw,format=RGB",
             "inference": " ".join(inference_parts),
             "postprocess": " ".join(postprocess_parts),
             "sink": (
@@ -97,6 +98,7 @@ class GStreamerHailoRealtimeConfig:
                 fields["source"],
                 fields["caps"],
                 fields["convert"],
+                fields["inference_caps"],
                 fields["inference"],
                 fields["postprocess"],
                 fields["sink"],

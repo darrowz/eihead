@@ -140,6 +140,7 @@ class GStreamerAppSinkFrameReader:
             f"v4l2src device={self.camera_device} io-mode=mmap ! "
             f"video/x-raw,width={self.width},height={self.height},framerate={self.framerate}/1 ! "
             "videoconvert ! "
+            "video/x-raw,format=RGB ! "
             f"{hailo_clause} ! "
             f"{filter_clause} ! "
             f"appsink name={self.appsink_name} emit-signals=true sync=false max-buffers=1 drop=true"
