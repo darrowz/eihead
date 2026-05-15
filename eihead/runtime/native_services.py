@@ -167,6 +167,9 @@ def gstreamer_hailo_config_from_eihead_config(
         width=_int(camera.get("width"), width),
         height=_int(camera.get("height"), height),
         framerate=_int(camera.get("framerate") or camera.get("fps") or limits.get("max_fps"), 30),
+        inference_width=_int(merged_hailo.get("inference_width"), 640),
+        inference_height=_int(merged_hailo.get("inference_height"), 640),
+        inference_format=_text(merged_hailo.get("inference_format"), "RGB"),
         hef_path=_text(merged_hailo.get("hef_path") or merged_hailo.get("hefPath"), ""),
         postprocess_so_path=_text(merged_hailo.get("postprocess_so_path") or merged_hailo.get("postprocessSoPath"), ""),
         postprocess_config_path=_text(

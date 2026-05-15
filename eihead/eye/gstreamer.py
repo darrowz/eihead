@@ -29,6 +29,9 @@ class GStreamerAppSinkFrameReader:
         width: int = 640,
         height: int = 480,
         framerate: int = 30,
+        inference_width: int = 640,
+        inference_height: int = 640,
+        inference_format: str = "RGB",
         backend: str = "gstreamer_hailo",
         hef_path: str = "",
         appsink_name: str = "vision_sink",
@@ -44,6 +47,9 @@ class GStreamerAppSinkFrameReader:
         self.width = int(width)
         self.height = int(height)
         self.framerate = int(framerate)
+        self.inference_width = int(inference_width)
+        self.inference_height = int(inference_height)
+        self.inference_format = str(inference_format)
         self.backend = backend
         self.hef_path = str(hef_path)
         self.appsink_name = appsink_name
@@ -140,7 +146,8 @@ class GStreamerAppSinkFrameReader:
             f"v4l2src device={self.camera_device} io-mode=mmap ! "
             f"video/x-raw,width={self.width},height={self.height},framerate={self.framerate}/1 ! "
             "videoconvert ! "
-            "video/x-raw,format=RGB ! "
+            "videoscale ! "
+            f"video/x-raw,format={self.inference_format},width={self.inference_width},height={self.inference_height} ! "
             f"{hailo_clause} ! "
             f"{filter_clause} ! "
             f"appsink name={self.appsink_name} emit-signals=true sync=false max-buffers=1 drop=true"

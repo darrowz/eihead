@@ -42,7 +42,8 @@ def test_gstreamer_hailo_config_exposes_realtime_pipeline_fields() -> None:
     assert fields["hailo_device"] == "/dev/hailo1"
     assert fields["caps"] == "video/x-raw,width=1280,height=720,framerate=60/1"
     assert fields["source"].startswith("v4l2src")
-    assert fields["inference_caps"] == "video/x-raw,format=RGB"
+    assert fields["scale"] == "videoscale"
+    assert fields["inference_caps"] == "video/x-raw,format=RGB,width=640,height=640"
     assert fields["inference"].startswith("hailonet")
     assert "device=/dev/hailo1" not in fields["inference"]
     assert "/opt/models/face.hef" in fields["inference"]
@@ -65,7 +66,8 @@ def test_gstreamer_hailo_pipeline_uses_device_id_only_when_configured() -> None:
     assert "device-id=0000:01:00.0" in fields["inference"]
     assert "device=/dev/hailo0" not in fields["inference"]
     assert "device-id=0000:01:00.0" in pipeline
-    assert "video/x-raw,format=RGB" in pipeline
+    assert "videoscale" in pipeline
+    assert "video/x-raw,format=RGB,width=640,height=640" in pipeline
 
 
 def test_device_paths_are_configured_without_touching_hardware() -> None:

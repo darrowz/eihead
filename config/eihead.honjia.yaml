@@ -24,6 +24,9 @@ devices:
     postprocess_config_path: /usr/share/hailo-models/yolov5_personface.json
     postprocess_function: filter
     score_threshold: 0.3
+    inference_width: 640
+    inference_height: 640
+    inference_format: RGB
     labels:
       - person
       - face

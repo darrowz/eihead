@@ -293,6 +293,9 @@ def test_from_config_path_wires_realtime_eye_service_from_honjia_config(tmp_path
                 "    postprocess_config_path: /opt/hailo/personface.json",
                 "    postprocess_function: filter",
                 "    score_threshold: 0.45",
+                "    inference_width: 640",
+                "    inference_height: 640",
+                "    inference_format: RGB",
                 "    labels: [person, face]",
                 "capabilities:",
                 "  software:",
@@ -326,6 +329,9 @@ def test_from_config_path_wires_realtime_eye_service_from_honjia_config(tmp_path
     assert getattr(gstreamer_config, "labels") == ("person", "face")
     assert getattr(gstreamer_config, "score_threshold") == 0.45
     assert getattr(gstreamer_config, "framerate") == 15
+    assert getattr(gstreamer_config, "inference_width") == 640
+    assert getattr(gstreamer_config, "inference_height") == 640
+    assert getattr(gstreamer_config, "inference_format") == "RGB"
 
     payload = runtime.vision_realtime()
     assert payload is not None

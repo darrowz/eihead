@@ -41,6 +41,9 @@ class GStreamerHailoRealtimeConfig:
     width: int = 640
     height: int = 480
     framerate: int = 30
+    inference_width: int = 640
+    inference_height: int = 640
+    inference_format: str = "RGB"
     hef_path: str = ""
     postprocess_so_path: str = ""
     postprocess_config_path: str = ""
@@ -82,7 +85,11 @@ class GStreamerHailoRealtimeConfig:
             "source": f"v4l2src device={self.camera_device} do-timestamp=true",
             "caps": f"video/x-raw,width={int(self.width)},height={int(self.height)},framerate={int(self.framerate)}/1",
             "convert": "videoconvert",
-            "inference_caps": "video/x-raw,format=RGB",
+            "scale": "videoscale",
+            "inference_caps": (
+                f"video/x-raw,format={self.inference_format},"
+                f"width={int(self.inference_width)},height={int(self.inference_height)}"
+            ),
             "inference": " ".join(inference_parts),
             "postprocess": " ".join(postprocess_parts),
             "sink": (
@@ -98,6 +105,7 @@ class GStreamerHailoRealtimeConfig:
                 fields["source"],
                 fields["caps"],
                 fields["convert"],
+                fields["scale"],
                 fields["inference_caps"],
                 fields["inference"],
                 fields["postprocess"],
@@ -316,6 +324,9 @@ class GStreamerHailoRealtimeAdapter:
             width=adapter_config.width,
             height=adapter_config.height,
             framerate=adapter_config.framerate,
+            inference_width=adapter_config.inference_width,
+            inference_height=adapter_config.inference_height,
+            inference_format=adapter_config.inference_format,
             backend=adapter_config.backend,
             hef_path=adapter_config.hef_path,
             appsink_name=adapter_config.appsink_name,
