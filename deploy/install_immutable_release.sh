@@ -44,12 +44,13 @@ if [ -n "$EIPROTOCOL_DIR" ]; then
 fi
 "$RELEASE_DIR/.venv/bin/python" -m pip install "$RELEASE_DIR"
 
-mkdir -p /opt/eihead /var/lib/eihead /var/log/eihead /etc/eihead
+mkdir -p /opt/eihead /var/lib/eihead /var/log/eihead
+sudo mkdir -p /etc/eihead
 if [ -f "$RELEASE_DIR/config/eihead.honjia.yaml" ]; then
-  if [ -f /etc/eihead/eihead.honjia.yaml ] && ! cmp -s "$RELEASE_DIR/config/eihead.honjia.yaml" /etc/eihead/eihead.honjia.yaml; then
-    cp /etc/eihead/eihead.honjia.yaml "/etc/eihead/eihead.honjia.yaml.bak.$(date -u +%Y%m%d%H%M%S)"
+  if sudo test -f /etc/eihead/eihead.honjia.yaml && ! sudo cmp -s "$RELEASE_DIR/config/eihead.honjia.yaml" /etc/eihead/eihead.honjia.yaml; then
+    sudo cp /etc/eihead/eihead.honjia.yaml "/etc/eihead/eihead.honjia.yaml.bak.$(date -u +%Y%m%d%H%M%S)"
   fi
-  cp "$RELEASE_DIR/config/eihead.honjia.yaml" /etc/eihead/eihead.honjia.yaml
+  sudo cp "$RELEASE_DIR/config/eihead.honjia.yaml" /etc/eihead/eihead.honjia.yaml
 fi
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
