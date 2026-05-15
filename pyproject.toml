@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Standalone head node runtime for the ei-hongtu system"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0"]
+dependencies = ["PyYAML>=6.0", "eiprotocol>=0.1.0"]
 
 [project.scripts]
 eihead-runtime = "eihead.runtime.cli:main"
@@ -18,16 +18,6 @@ include = [
     "eihead*",
     "apps",
     "apps.head_runtime*",
-    "apps.body_runtime*",
-    "eibrain",
-    "eibrain.body*",
-    "eibrain.cognition*",
-    "eibrain.infra*",
-    "eibrain.memory*",
-    "eibrain.protocol*",
-    "eibrain.verification*",
-    "eibrain.voice*",
-    "eiprotocol*",
 ]
 exclude = ["config*", "tests*", "docs*", "scripts*", "deploy*"]
 

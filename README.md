@@ -96,10 +96,15 @@ The current runtime still carries a small `eibrain.protocol` compatibility
 subset, transitional `eibrain.body` hardware code, and the minimal
 `eibrain.cognition.realtime` scheduler primitives needed by the exported
 `apps.body_runtime` voice chain, shared `eibrain.voice` readiness helpers,
-plus transitional hardware verification
-helpers. The shared protocol package is also exported as `/dev-project/eiprotocol`;
-when this exporter is given `--eiprotocol-repo-root`, `EXPORT_MANIFEST.json`
-pins the independent protocol repository revision used by this eihead build.
+plus transitional hardware verification helpers.
+
+`eihead` consumes `eiprotocol` as a standalone dependency. Install both from
+the parent workspace during development:
+
+```bash
+python -m pip install -e D:/github/ei-workspace/repos/eiprotocol
+python -m pip install -e D:/github/ei-workspace/repos/eihead
+```
 
 `EXPORT_MANIFEST.json` also contains `native_completion_gates`. Treat those
 gates as the source of truth for whether eye, neck, ear, mouth, runtime,
