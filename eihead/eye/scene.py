@@ -9,16 +9,9 @@ import json
 import math
 from typing import Any
 
-try:  # pragma: no cover - exercised in eihead standalone export tests.
-    from eibrain.cognition.vision_realtime import (
-        RealtimeVisionSimulator,
-        to_eiprotocol_event_contents,
-        to_eiprotocol_scene_content,
-    )
-except ModuleNotFoundError:  # pragma: no cover - standalone eihead has no full eibrain cognition package.
-    RealtimeVisionSimulator = None  # type: ignore[assignment]
-    to_eiprotocol_event_contents = None  # type: ignore[assignment]
-    to_eiprotocol_scene_content = None  # type: ignore[assignment]
+RealtimeVisionSimulator = None  # type: ignore[assignment]
+to_eiprotocol_event_contents = None  # type: ignore[assignment]
+to_eiprotocol_scene_content = None  # type: ignore[assignment]
 
 from .realtime import COMPAT_STATIC_FRAME_MODE, REALTIME_STREAM_MODE
 

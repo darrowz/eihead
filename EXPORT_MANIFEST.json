@@ -3,7 +3,7 @@
     "full_detachment_claim_allowed": false,
     "hardware_verified": false,
     "honjia_cutover": "blocked_by_hardware_validation",
-    "legacy_body_runtime_detached": false,
+    "legacy_body_runtime_detached": true,
     "readiness_note": "Code-level completion is not honjia cutover completion. The Wave 3 P0/P1 software closure is represented and tested, but honjia cutover remains blocked until hardware validation and legacy shim removal gates are recorded.",
     "software_closure": "complete",
     "state": "code_level_complete_pending_honjia_validation"
@@ -14,10 +14,10 @@
     "fake_completion_guard": "Report not_wired, unknown, degraded, or blocked until the acceptance gate is verified.",
     "hardware_verified": false,
     "honjia_cutover": "blocked_by_hardware_validation",
-    "legacy_body_runtime_detached": false,
+    "legacy_body_runtime_detached": true,
     "legacy_shim_policy": {
       "full_detachment_claim_allowed": false,
-      "legacy_body_runtime_detached": false,
+      "legacy_body_runtime_detached": true,
       "legacy_paths_must_be_marked_as_shims": true,
       "policy": "Legacy copies are allowed only as explicitly named transitional shims. Their presence blocks any claim that eihead is fully detached from legacy body runtime.",
       "shims": [
@@ -868,7 +868,7 @@
     "full_detachment_claim_allowed": false,
     "hardware_verified": false,
     "honjia_cutover_complete": false,
-    "legacy_body_runtime_detached": false,
+    "legacy_body_runtime_detached": true,
     "scope": "Wave 3 P0/P1 software closure",
     "state": "code_level_complete_pending_honjia_validation",
     "truthfulness_rule": "Code-level completion means the software gates are represented and tested; honjia cutover remains blocked until real hardware validation records parity."
@@ -886,62 +886,5 @@
     "name": "eihead",
     "runtime_path": "/opt/eihead/current"
   },
-  "transitional_packages": [
-    {
-      "package": "apps.body_runtime",
-      "paths": [
-        "apps/body_runtime"
-      ],
-      "reason": "Temporary honjia body runtime compatibility during eihead split."
-    },
-    {
-      "package": "eibrain.body",
-      "paths": [
-        "eibrain/body"
-      ],
-      "reason": "Temporary honjia hardware/runtime implementation before native eihead modules replace it."
-    },
-    {
-      "package": "eibrain.cognition.realtime",
-      "paths": [
-        "eibrain/cognition/realtime"
-      ],
-      "reason": "temporary realtime scheduler compatibility until eibrain/eihead protocol split is complete"
-    },
-    {
-      "package": "eibrain.infra",
-      "paths": [
-        "eibrain/infra"
-      ],
-      "reason": "Shared config helpers kept until eihead owns its deployment config layer."
-    },
-    {
-      "package": "eibrain.voice",
-      "paths": [
-        "eibrain/voice"
-      ],
-      "reason": "Shared voice-chain readiness helpers kept until eihead owns native voice diagnostics end-to-end."
-    },
-    {
-      "package": "eiprotocol",
-      "paths": [
-        "eiprotocol"
-      ],
-      "reason": "Shared protocol MVP carried as an export copy; EXPORT_MANIFEST pins the independent /dev-project/eiprotocol revision when supplied."
-    },
-    {
-      "package": "eibrain.protocol",
-      "paths": [
-        "eibrain/protocol"
-      ],
-      "reason": "Temporary protocol compatibility until eiprotocol is split into its own repo."
-    },
-    {
-      "package": "eibrain.verification",
-      "paths": [
-        "eibrain/verification"
-      ],
-      "reason": "Head-side hardware verification helpers retained while verify_hardware CLI is transitional."
-    }
-  ]
+  "transitional_packages": []
 }

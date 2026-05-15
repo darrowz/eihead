@@ -1,12 +1,10 @@
 # eihead
 
-Standalone head-node export for the ei-hongtu project.
+Canonical honjia head runtime package for the ei-hongtu project.
 
-This repository is generated from the eibrain monorepo by
-`scripts/export-eihead-repo.py`. It contains the honjia-facing head runtime,
-the `apps.head_runtime` compatibility entrypoint, a transitional copy of the
-old body runtime, eihead systemd templates, and eihead migration/deployment
-docs.
+`eihead` is the canonical honjia head runtime package. It depends on
+standalone `eiprotocol` for shared event contracts and does not vendor
+`eibrain`.
 
 ## Expected sync target
 
@@ -91,12 +89,6 @@ eihead-runtime status
 eihead-runtime http --host 0.0.0.0 --port 18081
 eihead-runtime monitor --host 0.0.0.0 --port 18080
 ```
-
-The current runtime still carries a small `eibrain.protocol` compatibility
-subset, transitional `eibrain.body` hardware code, and the minimal
-`eibrain.cognition.realtime` scheduler primitives needed by the exported
-`apps.body_runtime` voice chain, shared `eibrain.voice` readiness helpers,
-plus transitional hardware verification helpers.
 
 `eihead` consumes `eiprotocol` as a standalone dependency. Install both from
 the parent workspace during development:

@@ -1,9 +1,4 @@
-"""Head runtime scaffold.
-
-This module intentionally delegates to ``apps.body_runtime`` for the first
-migration pass. Keeping the wrapper small lets us introduce the eihead package
-without changing the proven honjia body runtime path.
-"""
+"""Head runtime scaffold with native-provider-first routing."""
 
 from __future__ import annotations
 
@@ -17,11 +12,6 @@ from eihead.neck import PanMoveCommand, PanNeckState, plan_pan_move
 from eihead.protocol import MoveHeadAction, PlaySpeechAction, StopSpeechAction, serialize_message
 from eihead.services import CapabilityRegistry
 from .event_journal import EventJournal
-from .legacy_body import (
-    DEFAULT_BODY_RUNTIME_DELEGATE,
-    BodyRuntimeFactory,
-    LegacyBodyRuntimeAdapter,
-)
 from .status_projection import runtime_check_summary
 from .event_projection import event_outcome_common
 from .native_providers import (
@@ -32,6 +22,7 @@ from .native_providers import (
 from .composition import build_native_capability_probe
 
 DEFAULT_CONFIG_PATH = "config/eibrain.yaml"
+DEFAULT_BODY_RUNTIME_DELEGATE = "eihead.native_runtime"
 DEFAULT_REALTIME_VISION_MAX_AGE_SECONDS = 2.0
 DEFAULT_PTZ_MIN_ANGLE_DELTA = 2.0
 REALTIME_VISION_ATTRS = (
@@ -63,12 +54,11 @@ REALTIME_VISION_CONTAINER_KEYS = (
 
 @dataclass(slots=True)
 class HeadRuntimeApp:
-    """Compatibility wrapper for the future standalone eihead runtime."""
+    """Standalone eihead runtime facade."""
 
-    body_runtime: Any
+    body_runtime: Any = None
     config_path: str = DEFAULT_CONFIG_PATH
     delegate_name: str = DEFAULT_BODY_RUNTIME_DELEGATE
-    legacy_body_adapter: LegacyBodyRuntimeAdapter = field(default_factory=LegacyBodyRuntimeAdapter, repr=False)
     realtime_vision_max_age_seconds: float = DEFAULT_REALTIME_VISION_MAX_AGE_SECONDS
     ptz_min_angle_delta: float = DEFAULT_PTZ_MIN_ANGLE_DELTA
     event_journal: EventJournal = field(default_factory=EventJournal, repr=False)
@@ -101,22 +91,17 @@ class HeadRuntimeApp:
         cls,
         path: str = DEFAULT_CONFIG_PATH,
         *,
-        body_runtime_factory: BodyRuntimeFactory | None = None,
+        body_runtime_factory: Any | None = None,
         native_provider_probe: NativeProviderProbe | None = None,
         native_environ: Mapping[str, str] | None = None,
         neck_servo_adapter: Any | None = None,
     ) -> "HeadRuntimeApp":
-        adapter = (
-            LegacyBodyRuntimeAdapter(body_runtime_factory=body_runtime_factory)
-            if body_runtime_factory is not None
-            else LegacyBodyRuntimeAdapter()
-        )
+        _ = body_runtime_factory
         native_config = _load_optional_eihead_config(str(path))
         return cls(
-            body_runtime=adapter.load_runtime(str(path)),
+            body_runtime=None,
             config_path=str(path),
-            delegate_name=adapter.delegate_name,
-            legacy_body_adapter=adapter,
+            delegate_name=DEFAULT_BODY_RUNTIME_DELEGATE,
             neck_servo_adapter=neck_servo_adapter,
             native_providers=build_native_provider_statuses(
                 config=native_config,
@@ -626,10 +611,10 @@ class HeadRuntimeApp:
 
     def _body_snapshot(self) -> dict[str, Any]:
         if not hasattr(self.body_runtime, "snapshot"):
-            raise TypeError("body_runtime must expose snapshot() for eihead compatibility")
+            return {}
         snapshot = self.body_runtime.snapshot()
         if not isinstance(snapshot, Mapping):
-            raise TypeError("body_runtime.snapshot() must return a mapping")
+            return {}
         return dict(snapshot)
 
     def _realtime_vision_candidates(self) -> list[Any]:
@@ -710,11 +695,11 @@ class HeadRuntimeApp:
                 action_id=action_id,
                 action_type=action_type,
                 trace_id=trace_id,
-                status="skipped",
+                status="not_wired",
                 success=False,
                 details={
                     **dict(details or {}),
-                    "reason": "body_runtime_dispatch_unavailable",
+                    "reason": "native_provider_unavailable",
                     "protocol_action": protocol_action.kind,
                 },
             )
@@ -735,27 +720,6 @@ class HeadRuntimeApp:
             )
 
         serialized = [_serialize_outcome(outcome) for outcome in delegate_outcomes or []]
-        compat_action = None
-        if not serialized:
-            compat_action = self.legacy_body_adapter.compat_action(protocol_action)
-            if compat_action is not None:
-                try:
-                    delegate_outcomes = dispatch_actions([compat_action])
-                except Exception as exc:  # pragma: no cover - exercised by integration when hardware fails.
-                    return self._action_outcome(
-                        action_id=action_id,
-                        action_type=action_type,
-                        trace_id=trace_id,
-                        status="error",
-                        success=False,
-                        details={
-                            **dict(details or {}),
-                            "error": str(exc),
-                            "protocol_action": protocol_action.kind,
-                            "compat_protocol_action": getattr(compat_action, "kind", ""),
-                        },
-                    )
-                serialized = [_serialize_outcome(outcome) for outcome in delegate_outcomes or []]
         return self._action_outcome(
             action_id=action_id,
             action_type=action_type,
@@ -766,7 +730,6 @@ class HeadRuntimeApp:
             details={
                 **dict(details or {}),
                 "protocol_action": protocol_action.kind,
-                "compat_protocol_action": getattr(compat_action, "kind", "") if compat_action is not None else "",
                 "delegate_outcomes": serialized,
             },
         )
@@ -822,9 +785,9 @@ class HeadRuntimeApp:
             action_id=action_id,
             action_type="capture_frame",
             trace_id=trace_id,
-            status="unsupported",
+            status="not_wired",
             success=False,
-            details={"reason": "capture_frame_unavailable"},
+            details={"reason": "native_provider_unavailable"},
         )
 
     def _action_outcome(
