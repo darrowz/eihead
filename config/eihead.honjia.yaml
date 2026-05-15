@@ -15,6 +15,7 @@ legacy:
 devices:
   camera:
     path: /dev/video0
+    framerate: 30
     frame_path: /tmp/eibrain-vision/latest.jpg
     state_path: /tmp/eibrain-vision/state.json
   hailo:
