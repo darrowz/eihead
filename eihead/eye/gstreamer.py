@@ -38,7 +38,7 @@ class GStreamerAppSinkFrameReader:
         hailofilter_so_path: str = "",
         hailofilter_config_path: str = "",
         hailofilter_function: str = "",
-        sample_timeout_s: float = 1.0,
+        sample_timeout_s: float = 5.0,
         clock: Callable[[], float] = time.time,
         pipeline_metadata: dict[str, Any] | None = None,
     ) -> None:

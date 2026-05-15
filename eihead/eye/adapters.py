@@ -51,7 +51,7 @@ class GStreamerHailoRealtimeConfig:
     score_threshold: float = 0.3
     labels: tuple[str, ...] = ("person", "face")
     strict_metadata: bool = False
-    sample_timeout_s: float = 1.0
+    sample_timeout_s: float = 5.0
     model_id: str = "hailo"
     backend: str = "gstreamer_hailo"
     source_name: str = "gstreamer_hailo"

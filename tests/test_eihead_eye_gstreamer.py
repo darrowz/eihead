@@ -69,7 +69,7 @@ def test_read_frame_returns_realtime_vision_frame(monkeypatch) -> None:
     assert frame.metadata["frame_index"] == 1
     assert frame.metadata["camera_device"] == "/dev/video0"
     assert frame.metadata["gst_buffer_timestamp_s"] == 2.5
-    assert fake.appsink.emitted == [("try-pull-sample", (1_000_000_000,))]
+    assert fake.appsink.emitted == [("try-pull-sample", (5_000_000_000,))]
 
 
 def test_read_frame_returns_none_when_no_sample(monkeypatch) -> None:

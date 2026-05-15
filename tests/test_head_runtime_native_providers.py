@@ -347,6 +347,7 @@ def test_from_config_path_wires_realtime_eye_service_from_honjia_config(tmp_path
     assert getattr(gstreamer_config, "inference_width") == 640
     assert getattr(gstreamer_config, "inference_height") == 640
     assert getattr(gstreamer_config, "inference_format") == "RGB"
+    assert getattr(gstreamer_config, "sample_timeout_s") == 5.0
 
     payload = runtime.vision_realtime()
     assert payload is not None
