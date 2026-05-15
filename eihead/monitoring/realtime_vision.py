@@ -193,6 +193,12 @@ def _derive_realtime_status(observation: Mapping[str, Any] | None) -> tuple[str,
         return "degraded", True, ""
     if stale and (kind == "realtime_vision_observation" or mode in {VISION_REALTIME_MODE, "realtime_stream"}):
         return "stale", True, ""
+    if (
+        observation.get("stream_ready") is not None
+        and not _truthy(observation.get("stream_ready"))
+        and (kind == "realtime_vision_observation" or mode in {VISION_REALTIME_MODE, "realtime_stream"})
+    ):
+        return "degraded", True, ""
     if kind == "realtime_vision_observation" or mode in {VISION_REALTIME_MODE, "realtime_stream"}:
         return "wired", True, ""
     return "unknown", False, "payload is not a recognized realtime eye observation"
@@ -248,9 +254,12 @@ def _build_realtime_diagnostic(
         stale=stale,
         degraded=degraded,
     )
+    readiness_message = _string_or_none(_first_nested_present(observation, "readiness_message", "message"))
     not_wired_reason = _string_or_none(_first_nested_present(observation, "not_wired_reason"))
     stale_reason = _string_or_none(_first_nested_present(observation, "stale_reason"))
     degraded_reason = _string_or_none(_first_nested_present(observation, "degraded_reason"))
+    if degraded and not degraded_reason:
+        degraded_reason = readiness_message or status_reason
     readiness = _readiness_payload(
         _first_nested_present(observation, "readiness"),
         ready=stream_ready,
@@ -265,7 +274,6 @@ def _build_realtime_diagnostic(
     hooks_used = _hooks_used(_first_nested_present(observation, "hooks_used", "hooks"))
     pipeline = _json_object_or_none(_first_nested_present(observation, "pipeline"))
     devices = _json_object_or_none(_first_nested_present(observation, "devices", "device_paths"))
-    readiness_message = _string_or_none(_first_nested_present(observation, "readiness_message", "message"))
     parse_error_count = _int_or_none(_first_nested_present(observation, "parse_error_count"))
     parse_errors = _parse_errors(_first_nested_present(observation, "parse_errors", "errors"))
     source_freshness = _source_freshness(

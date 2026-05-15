@@ -339,6 +339,28 @@ def test_realtime_vision_payload_reads_scene_augmented_service_observation() -> 
     assert payload["target_score_label"] == "person 0.93"
 
 
+def test_realtime_vision_payload_marks_wired_waiting_stream_as_degraded() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "waiting_for_frame",
+            "stream_ready": False,
+            "not_wired": False,
+            "message": "no realtime frame available",
+        },
+        timestamp=1000.0,
+        source="eye_realtime",
+    )
+
+    assert payload["status"] == "degraded"
+    assert payload["wired"] is True
+    assert payload["not_wired"] is False
+    assert payload["stream_ready"] is False
+    assert payload["degraded"] is True
+    assert payload["degraded_reason"] == "no realtime frame available"
+
+
 def test_realtime_vision_payload_keeps_non_live_scene_bridge_outputs_unwired() -> None:
     bridge = RealtimeVisionSceneBridge()
 
