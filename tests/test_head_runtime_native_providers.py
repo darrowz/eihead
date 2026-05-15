@@ -243,6 +243,21 @@ def test_native_provider_probe_can_report_degraded_with_truthful_metadata() -> N
     }
 
 
+def test_native_provider_normalizes_wired_but_waiting_stream_as_degraded() -> None:
+    runtime = HeadRuntimeApp(
+        native_providers={
+            "eye": {
+                "status": "waiting_for_frame",
+                "not_wired": False,
+                "stream_ready": False,
+                "provider": "native-eye-service",
+            }
+        },
+    )
+
+    assert runtime.status()["native_providers"]["eye"]["status"] == "degraded"
+
+
 def test_native_eye_service_status_feeds_status_and_capability_readiness() -> None:
     runtime = HeadRuntimeApp(
         body_runtime=FakeBodyRuntime(),

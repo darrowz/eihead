@@ -170,6 +170,7 @@ def gstreamer_hailo_config_from_eihead_config(
         inference_width=_int(merged_hailo.get("inference_width"), 640),
         inference_height=_int(merged_hailo.get("inference_height"), 640),
         inference_format=_text(merged_hailo.get("inference_format"), "RGB"),
+        sample_timeout_s=_float(merged_hailo.get("sample_timeout_s") or merged_hailo.get("sampleTimeoutS"), 1.0),
         hef_path=_text(merged_hailo.get("hef_path") or merged_hailo.get("hefPath"), ""),
         postprocess_so_path=_text(merged_hailo.get("postprocess_so_path") or merged_hailo.get("postprocessSoPath"), ""),
         postprocess_config_path=_text(

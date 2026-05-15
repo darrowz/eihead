@@ -213,6 +213,8 @@ def _status_from_readiness(raw_status: Mapping[str, Any]) -> str | None:
         return "degraded"
     if stream_ready is True:
         return "wired"
+    if stream_ready is False and not not_wired and not placeholder:
+        return "degraded"
     if stream_ready is False:
         return "unavailable"
     if raw_text in {"tracking", "ready", "running", "online", "ok", "live"} and (

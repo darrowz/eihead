@@ -51,6 +51,7 @@ class GStreamerHailoRealtimeConfig:
     score_threshold: float = 0.3
     labels: tuple[str, ...] = ("person", "face")
     strict_metadata: bool = False
+    sample_timeout_s: float = 1.0
     model_id: str = "hailo"
     backend: str = "gstreamer_hailo"
     source_name: str = "gstreamer_hailo"
@@ -92,6 +93,7 @@ class GStreamerHailoRealtimeConfig:
             ),
             "inference": " ".join(inference_parts),
             "postprocess": " ".join(postprocess_parts),
+            "sample_timeout_s": f"{float(self.sample_timeout_s):.3f}",
             "sink": (
                 f"appsink name={self.appsink_name} emit-signals=true "
                 "sync=false max-buffers=1 drop=true"
@@ -333,6 +335,7 @@ class GStreamerHailoRealtimeAdapter:
             hailofilter_so_path=adapter_config.postprocess_so_path,
             hailofilter_config_path=adapter_config.postprocess_config_path,
             hailofilter_function=adapter_config.postprocess_function,
+            sample_timeout_s=adapter_config.sample_timeout_s,
             clock=clock,
             pipeline_metadata={"adapter": "eihead.eye.adapters"},
         )

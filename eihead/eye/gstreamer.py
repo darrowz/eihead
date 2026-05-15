@@ -38,6 +38,7 @@ class GStreamerAppSinkFrameReader:
         hailofilter_so_path: str = "",
         hailofilter_config_path: str = "",
         hailofilter_function: str = "",
+        sample_timeout_s: float = 1.0,
         clock: Callable[[], float] = time.time,
         pipeline_metadata: dict[str, Any] | None = None,
     ) -> None:
@@ -56,6 +57,7 @@ class GStreamerAppSinkFrameReader:
         self.hailofilter_so_path = str(hailofilter_so_path)
         self.hailofilter_config_path = str(hailofilter_config_path)
         self.hailofilter_function = str(hailofilter_function)
+        self.sample_timeout_s = float(sample_timeout_s)
         self._clock = clock
         self._pipeline = None
         self._appsink = None
@@ -95,7 +97,7 @@ class GStreamerAppSinkFrameReader:
     def read_frame(self) -> RealtimeVisionFrame | dict[str, Any] | None:
         if self._appsink is None:
             return None
-        sample = self._appsink.emit("pull-sample")
+        sample = self._appsink.emit("try-pull-sample", self._sample_timeout_ns())
         if sample is None:
             return None
 
@@ -218,8 +220,12 @@ class GStreamerAppSinkFrameReader:
             "hailo_device": self.hailo_device,
             "frame_index": self._frame_counter,
             "gst_buffer_timestamp_s": buffer_timestamp_s,
+            "sample_timeout_s": self.sample_timeout_s,
             **self._pipeline_metadata,
         }
+
+    def _sample_timeout_ns(self) -> int:
+        return int(max(0.0, self.sample_timeout_s) * 1_000_000_000)
 
 
 def _load_gstreamer_modules():

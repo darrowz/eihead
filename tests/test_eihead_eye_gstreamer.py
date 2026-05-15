@@ -69,14 +69,16 @@ def test_read_frame_returns_realtime_vision_frame(monkeypatch) -> None:
     assert frame.metadata["frame_index"] == 1
     assert frame.metadata["camera_device"] == "/dev/video0"
     assert frame.metadata["gst_buffer_timestamp_s"] == 2.5
+    assert fake.appsink.emitted == [("try-pull-sample", (1_000_000_000,))]
 
 
 def test_read_frame_returns_none_when_no_sample(monkeypatch) -> None:
     fake = _FakeGstreamerEnvironment(sample=None)
     with _patch_loader(monkeypatch, fake):
-        reader = gstreamer.GStreamerAppSinkFrameReader(appsink_name="unit_sink")
+        reader = gstreamer.GStreamerAppSinkFrameReader(appsink_name="unit_sink", sample_timeout_s=0.25)
         reader.start()
         assert reader.read_frame() is None
+        assert fake.appsink.emitted == [("try-pull-sample", (250_000_000,))]
 
 
 class _FakeGstreamerEnvironment:
@@ -97,9 +99,11 @@ class _FakeGstreamerEnvironment:
         class _AppSink:
             def __init__(self, payload: object | None) -> None:
                 self.payload = payload
+                self.emitted: list[tuple[str, tuple[object, ...]]] = []
 
-            def emit(self, name: str) -> object | None:
-                if name == "pull-sample":
+            def emit(self, name: str, *args: object) -> object | None:
+                self.emitted.append((name, args))
+                if name == "try-pull-sample":
                     return self.payload
                 return None
 
