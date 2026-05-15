@@ -328,6 +328,20 @@ def test_monitor_lightweight_root_avoids_synchronous_diagnostics(monkeypatch) ->
     assert "Promise.allSettled" in body
 
 
+def test_monitor_lightweight_root_renders_human_diagnostics_instead_of_raw_json(monkeypatch) -> None:
+    monkeypatch.setenv("EIHEAD_MONITOR_LIGHTWEIGHT_ROOT", "1")
+    with running_server(BaseMonitorApp(), clock=lambda: 1008.0) as (base_url, _server, _thread):
+        status_code, _headers, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert "阻塞点" in body
+    assert "证据" in body
+    assert "下一步" in body
+    assert "具体数据" in body
+    assert "Latest JSON" not in body
+    assert "JSON.stringify" not in body
+
+
 def _pan_plan(
     *,
     status: str,

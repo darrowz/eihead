@@ -843,33 +843,187 @@ def _render_lightweight_index(timestamp: float) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>eihead native monitor</title>
   <style>
-    body {{ margin: 0; font: 15px/1.5 sans-serif; background: #f7f3ea; color: #17201a; }}
-    main {{ max-width: 980px; margin: 0 auto; padding: 28px 20px 42px; }}
-    header {{ border-bottom: 3px solid #5f8f7a; margin-bottom: 20px; }}
-    h1 {{ margin: 0 0 6px; font-size: 32px; }}
-    .grid {{ display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }}
-    .card {{ background: #fffaf0; border: 1px solid #d7cbb3; border-radius: 14px; padding: 16px; }}
-    .label {{ color: #5c6b61; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }}
-    .metric {{ display: block; margin-top: 4px; font-size: 20px; font-weight: 700; }}
-    pre {{ overflow: auto; padding: 14px; background: #10231a; color: #d9f3df; border-radius: 10px; }}
-    a {{ color: #315f4c; }}
+    :root {{
+      --canvas: #101010;
+      --surface: #151515;
+      --surface-soft: #1a1a1a;
+      --hairline: #3d3a39;
+      --ink: #f2f2f2;
+      --body: #bdbdbd;
+      --muted: #8b949e;
+      --green: #00d992;
+      --green-soft: #2fd6a1;
+      --warn: #f4c95d;
+      --bad: #ff6b6b;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font: 15px/1.55 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--canvas);
+      color: var(--ink);
+    }}
+    main {{ max-width: 1220px; margin: 0 auto; padding: 32px 24px 44px; }}
+    header {{
+      display: grid;
+      gap: 18px;
+      border-bottom: 1px dashed rgba(79, 93, 117, 0.55);
+      padding-bottom: 24px;
+      margin-bottom: 22px;
+    }}
+    h1 {{ margin: 0; font-size: clamp(32px, 4vw, 56px); line-height: 1.03; font-weight: 400; letter-spacing: 0; }}
+    h2 {{ margin: 32px 0 14px; font-size: 22px; line-height: 1.25; font-weight: 650; letter-spacing: 0; }}
+    p {{ margin: 0; color: var(--body); max-width: 860px; }}
+    a {{ color: var(--green-soft); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .eyebrow {{
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 2.2px;
+      text-transform: uppercase;
+    }}
+    .topline {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border: 1px solid var(--hairline);
+      border-radius: 999px;
+      padding: 4px 10px;
+      color: var(--body);
+      font-size: 13px;
+      white-space: nowrap;
+    }}
+    .pill.good {{ border-color: rgba(0, 217, 146, 0.45); color: var(--green); }}
+    .pill.warn {{ border-color: rgba(244, 201, 93, 0.5); color: var(--warn); }}
+    .pill.bad {{ border-color: rgba(255, 107, 107, 0.55); color: var(--bad); }}
+    .grid {{ display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }}
+    .wide-grid {{ display: grid; gap: 12px; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .9fr); }}
+    .card {{
+      min-width: 0;
+      background: var(--surface);
+      border: 1px solid var(--hairline);
+      border-radius: 8px;
+      padding: 18px;
+    }}
+    .card.hot {{ border-color: rgba(0, 217, 146, 0.65); box-shadow: 0 0 0 1px rgba(0, 217, 146, 0.1) inset; }}
+    .label {{
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.6px;
+      text-transform: uppercase;
+    }}
+    .metric {{
+      display: block;
+      margin-top: 7px;
+      color: var(--ink);
+      font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 21px;
+      font-weight: 650;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+    }}
+    .hint {{ display: block; margin-top: 8px; color: var(--muted); font-size: 13px; }}
+    .rows {{ display: grid; gap: 8px; margin-top: 10px; }}
+    .row {{
+      display: grid;
+      gap: 8px;
+      grid-template-columns: minmax(110px, .75fr) minmax(0, 1.4fr);
+      align-items: baseline;
+      border-top: 1px solid rgba(61, 58, 57, 0.75);
+      padding-top: 8px;
+    }}
+    .row span:first-child {{ color: var(--muted); font-size: 13px; }}
+    .row span:last-child {{
+      color: var(--ink);
+      font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      overflow-wrap: anywhere;
+    }}
+    .blockers {{ display: grid; gap: 10px; }}
+    .blocker {{
+      border: 1px solid var(--hairline);
+      border-left: 3px solid var(--warn);
+      border-radius: 8px;
+      background: var(--surface-soft);
+      padding: 14px;
+    }}
+    .blocker.bad {{ border-left-color: var(--bad); }}
+    .blocker.good {{ border-left-color: var(--green); }}
+    .blocker-title {{ color: var(--ink); font-weight: 700; }}
+    .blocker-body {{ margin-top: 4px; color: var(--body); }}
+    .endpoint-bar {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+    .endpoint-bar a {{
+      border: 1px solid var(--hairline);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: var(--surface);
+      color: var(--green-soft);
+      font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }}
+    @media (max-width: 860px) {{
+      main {{ padding: 24px 16px 36px; }}
+      .wide-grid {{ grid-template-columns: 1fr; }}
+      .row {{ grid-template-columns: 1fr; }}
+      .metric {{ font-size: 18px; }}
+    }}
   </style>
 </head>
 <body>
   <main>
     <header>
-      <h1>eihead native monitor</h1>
-      <p>lightweight shell · generated {generated_at} · live cards load from JSON APIs</p>
+      <div class="eyebrow">HONJIA LIVE DIAGNOSTICS</div>
+      <h1>eihead 真机监控台</h1>
+      <p>lightweight shell · generated {generated_at} · 页面会读取实时 API，但只展示可判断的中文结论、具体数据、证据和下一步动作。</p>
+      <div class="topline">
+        <span class="pill" id="health-pill">健康：读取中</span>
+        <span class="pill" id="vision-pill">视觉：读取中</span>
+        <span class="pill" id="neck-pill">脖子：读取中</span>
+        <span class="pill" id="voice-pill">语音：读取中</span>
+      </div>
     </header>
-    <section class="grid">
-      <div class="card"><div class="label">Health</div><span class="metric" id="health">loading</span><a href="/health">/health</a></div>
-      <div class="card"><div class="label">Vision</div><span class="metric" id="vision">loading</span><a href="/api/vision/realtime">/api/vision/realtime</a></div>
-      <div class="card"><div class="label">Neck</div><span class="metric" id="neck">loading</span><a href="/api/neck/status">/api/neck/status</a></div>
-      <div class="card"><div class="label">Voice</div><span class="metric" id="voice">loading</span><a href="/api/voice/realtime">/api/voice/realtime</a></div>
-      <div class="card"><div class="label">Status JSON</div><span class="metric">ready</span><a href="/status.json">/status.json</a></div>
+    <section class="wide-grid">
+      <div class="card hot">
+        <div class="label">阻塞点</div>
+        <div class="blockers" id="blockers">
+          <div class="blocker"><div class="blocker-title">正在读取 honjia</div><div class="blocker-body">等待健康、视觉、脖子、语音四组实时数据返回。</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="label">下一步</div>
+        <div class="rows" id="next-steps">
+          <div class="row"><span>建议</span><span>读取完成后生成</span></div>
+        </div>
+      </div>
     </section>
-    <h2>Latest JSON</h2>
-    <pre id="json">loading...</pre>
+
+    <h2>具体数据</h2>
+    <section class="grid">
+      <div class="card"><div class="label">Web/API</div><span class="metric" id="health">读取中</span><span class="hint" id="health-hint">/health</span></div>
+      <div class="card"><div class="label">视觉实时流</div><span class="metric" id="vision">读取中</span><span class="hint" id="vision-hint">/api/vision/realtime</span></div>
+      <div class="card"><div class="label">脖子/云台</div><span class="metric" id="neck">读取中</span><span class="hint" id="neck-hint">/api/neck/status</span></div>
+      <div class="card"><div class="label">语音链路</div><span class="metric" id="voice">读取中</span><span class="hint" id="voice-hint">/api/voice/realtime</span></div>
+    </section>
+
+    <h2>证据</h2>
+    <section class="grid">
+      <div class="card"><div class="label">视觉证据</div><div class="rows" id="vision-evidence"></div></div>
+      <div class="card"><div class="label">脖子证据</div><div class="rows" id="neck-evidence"></div></div>
+      <div class="card"><div class="label">语音证据</div><div class="rows" id="voice-evidence"></div></div>
+      <div class="card"><div class="label">运行证据</div><div class="rows" id="health-evidence"></div></div>
+    </section>
+
+    <h2>原始接口</h2>
+    <div class="endpoint-bar">
+      <a href="/health">/health</a>
+      <a href="/status.json">/status.json</a>
+      <a href="/api/vision/realtime">/api/vision/realtime</a>
+      <a href="/api/neck/status">/api/neck/status</a>
+      <a href="/api/voice/realtime">/api/voice/realtime</a>
+      <a href="/api/capabilities">/api/capabilities</a>
+    </div>
   </main>
   <script>
     const timeoutSignal = (ms) => {{
@@ -884,6 +1038,106 @@ def _render_lightweight_index(timestamp: float) -> str:
     function setText(id, text) {{
       document.getElementById(id).textContent = text || 'unknown';
     }}
+    function text(value, fallback = '未知') {{
+      if (value === null || value === undefined || value === '') return fallback;
+      if (typeof value === 'boolean') return value ? '是' : '否';
+      return String(value);
+    }}
+    function metric(value, unit = '') {{
+      if (value === null || value === undefined || value === '') return '未知';
+      return `${{value}}${{unit}}`;
+    }}
+    function statusTone(status) {{
+      const normalized = String(status || '').toLowerCase();
+      if (['ok', 'online', 'healthy', 'ready', 'wired', 'tracking', 'running', 'live'].includes(normalized)) return 'good';
+      if (['not_wired', 'offline', 'error', 'failed', 'blocked', 'unavailable'].includes(normalized)) return 'bad';
+      if (['degraded', 'stale', 'unknown', 'timeout'].includes(normalized)) return 'warn';
+      return 'warn';
+    }}
+    function setPill(id, label, status) {{
+      const el = document.getElementById(id);
+      const tone = statusTone(status);
+      el.className = `pill ${{tone}}`;
+      el.textContent = `${{label}}：${{text(status)}}`;
+    }}
+    function setRows(id, rows) {{
+      const root = document.getElementById(id);
+      root.innerHTML = '';
+      rows.forEach(([label, value]) => {{
+        const row = document.createElement('div');
+        row.className = 'row';
+        const left = document.createElement('span');
+        const right = document.createElement('span');
+        left.textContent = label;
+        right.textContent = text(value);
+        row.append(left, right);
+        root.append(row);
+      }});
+    }}
+    function blocker(title, body, tone = 'warn') {{
+      const item = document.createElement('div');
+      item.className = `blocker ${{tone}}`;
+      const titleEl = document.createElement('div');
+      titleEl.className = 'blocker-title';
+      titleEl.textContent = title;
+      const bodyEl = document.createElement('div');
+      bodyEl.className = 'blocker-body';
+      bodyEl.textContent = body;
+      item.append(titleEl, bodyEl);
+      return item;
+    }}
+    function setBlockers(items) {{
+      const root = document.getElementById('blockers');
+      root.innerHTML = '';
+      items.forEach((item) => root.append(item));
+    }}
+    function first(...values) {{
+      return values.find((value) => value !== null && value !== undefined && value !== '');
+    }}
+    function providerSummary(health, key) {{
+      const providers = health.native_providers || {{}};
+      const provider = providers[key] || {{}};
+      return `${{text(provider.status)}} / ${{text(provider.provider)}} / ${{text(provider.reason)}}`;
+    }}
+    function sourceFreshness(vision) {{
+      const freshness = vision.source_freshness || (vision.diagnostic || {{}}).source_freshness || {{}};
+      if (!freshness.state && freshness.age_s === undefined) return '未知';
+      return `${{text(freshness.state)}} · age=${{metric(freshness.age_s, 's')}}`;
+    }}
+    function voiceReadiness(voice) {{
+      const chain = voice.voice_chain_readiness || {{}};
+      return first(voice.readiness_message, chain.readinessMessage, chain.summary, '未知');
+    }}
+    function nextStepRows(health, vision, neck, voice) {{
+      const rows = [];
+      if (statusTone(vision.status) === 'bad') rows.push(['视觉', '先修 eihead 实时 eye provider 或 vision service 模块路径，直到 /api/vision/realtime 有 frame_id、fps、detections。']);
+      if (statusTone(neck.status) === 'bad') rows.push(['脖子', '把 native neck diagnostics 暴露到 runtime app，至少返回 current_angle、target_angle、servo.status。']);
+      if (statusTone(voice.status) === 'bad') rows.push(['语音', '接入实时 audio/voice diagnostics，确认 realtime_audio.running、round、scheduler 不再 unknown。']);
+      if (statusTone(health.status) !== 'good') rows.push(['运行', '先处理 /health 非 ok，再判断单个硬件链路。']);
+      if (!rows.length) rows.push(['验收', '四组状态都在线，可进入动作闭环、延迟和稳定性压测。']);
+      return rows;
+    }}
+    function buildBlockers(health, vision, neck, voice) {{
+      const items = [];
+      if (statusTone(health.status) !== 'good') {{
+        items.push(blocker('Web/API 健康异常', `health=${{text(health.status)}}，runtime=${{text(health.runtime)}}。`, 'bad'));
+      }}
+      if (statusTone(vision.status) === 'bad') {{
+        items.push(blocker('视觉实时流未打通', `状态=${{text(vision.status)}}，freshness=${{sourceFreshness(vision)}}，frame=${{text(vision.frame_id)}}，fps=${{metric(vision.fps)}}。`, 'bad'));
+      }} else if (statusTone(vision.status) === 'warn') {{
+        items.push(blocker('视觉实时流需要确认', `状态=${{text(vision.status)}}，frame age=${{metric(first(vision.last_frame_age_s, vision.last_frame_age), 's')}}。`, 'warn'));
+      }}
+      if (statusTone(neck.status) === 'bad') {{
+        items.push(blocker('脖子诊断未接入', `状态=${{text(neck.status)}}，servo=${{text((neck.servo || {{}}).status)}}，说明=${{text(neck.readiness_message)}}。`, 'bad'));
+      }}
+      if (statusTone(voice.status) === 'bad') {{
+        items.push(blocker('语音实时链路未接入', `状态=${{text(voice.status)}}，realtime_audio.running=${{text((voice.realtime_audio || {{}}).running)}}，说明=${{voiceReadiness(voice)}}。`, 'bad'));
+      }}
+      if (!items.length) {{
+        items.push(blocker('没有发现硬阻塞', '健康、视觉、脖子、语音都没有报告 blocked/not_wired/offline，可继续做闭环联调。', 'good'));
+      }}
+      return items;
+    }}
     Promise.allSettled([
       loadJson('/health'),
       loadJson('/api/vision/realtime'),
@@ -895,11 +1149,59 @@ def _render_lightweight_index(timestamp: float) -> str:
       const vision = values[1];
       const neck = values[2];
       const voice = values[3];
-      setText('health', `${{health.status || 'unknown'}}`);
-      setText('vision', `${{vision.status || 'unknown'}} · ${{vision.fps || 0}} fps`);
-      setText('neck', `${{neck.status || 'unknown'}} · ${{neck.current_angle ?? 'n/a'}} -> ${{neck.target_angle ?? 'n/a'}}`);
-      setText('voice', `${{voice.status || 'unknown'}}`);
-      document.getElementById('json').textContent = JSON.stringify({{ health, vision, neck, voice }}, null, 2);
+      setPill('health-pill', '健康', health.status);
+      setPill('vision-pill', '视觉', vision.status);
+      setPill('neck-pill', '脖子', neck.status);
+      setPill('voice-pill', '语音', voice.status);
+      setText('health', `${{text(health.status)}} · ${{text(health.runtime)}}`);
+      setText('vision', `${{text(vision.status)}} · ${{metric(vision.fps, ' fps')}}`);
+      setText('neck', `${{text(neck.status)}} · ${{metric(neck.current_angle, 'deg')}} -> ${{metric(neck.target_angle, 'deg')}}`);
+      setText('voice', `${{text(voice.status)}} · audio=${{text((voice.realtime_audio || {{}}).running)}}`);
+      setText('health-hint', `providers: eye ${{providerSummary(health, 'eye')}}`);
+      setText('vision-hint', `${{text(vision.detections_summary, '无检测摘要')}}`);
+      setText('neck-hint', `${{text(neck.readiness_message, '无 readiness 信息')}}`);
+      setText('voice-hint', `${{voiceReadiness(voice)}}`);
+      setRows('vision-evidence', [
+        ['状态', vision.status],
+        ['画面帧', first(vision.frame_id, (vision.overlay || {{}}).frame?.frame_id)],
+        ['FPS', metric(vision.fps)],
+        ['帧年龄', metric(first(vision.last_frame_age_s, vision.last_frame_age), 's')],
+        ['检测数量', first(vision.detection_count, (vision.detections || []).length)],
+        ['最高目标', text((vision.top_detection || {{}}).label, '无')],
+        ['数据新鲜度', sourceFreshness(vision)],
+        ['图像', text(((vision.overlay || {{}}).frame || {{}}).image_message, '无图像说明')],
+      ]);
+      setRows('neck-evidence', [
+        ['状态', neck.status],
+        ['当前角度', metric(neck.current_angle, 'deg')],
+        ['目标角度', metric(neck.target_angle, 'deg')],
+        ['是否会动', neck.will_move],
+        ['是否抑制', neck.suppressed],
+        ['抑制原因', neck.suppression_reason],
+        ['Servo', `${{text((neck.servo || {{}}).status)}} / ${{text((neck.servo || {{}}).reason)}}`],
+        ['Axis', `pan=${{text(((neck.axis_support || {{}}).pan || {{}}).status)}} / tilt=${{text(((neck.axis_support || {{}}).tilt || {{}}).status)}}`],
+      ]);
+      setRows('voice-evidence', [
+        ['状态', voice.status],
+        ['实时音频', `enabled=${{text((voice.realtime_audio || {{}}).enabled)}} / running=${{text((voice.realtime_audio || {{}}).running)}}`],
+        ['Round', `${{text((voice.round || {{}}).phase)}} / active=${{text((voice.round || {{}}).active)}}`],
+        ['Scheduler', text((voice.scheduler || {{}}).state)],
+        ['事件数', metric(voice.event_count)],
+        ['首 token', metric(((voice.latency || {{}}).stage_latency_ms || {{}}).first_reply_token, 'ms')],
+        ['首语音', metric(((voice.latency || {{}}).stage_latency_ms || {{}}).first_speech, 'ms')],
+        ['Readiness', voiceReadiness(voice)],
+      ]);
+      setRows('health-evidence', [
+        ['状态', health.status],
+        ['Runtime', health.runtime],
+        ['节点', first(health.node_id, health.node_role)],
+        ['Eye provider', providerSummary(health, 'eye')],
+        ['Ear provider', providerSummary(health, 'ear')],
+        ['Mouth provider', providerSummary(health, 'mouth')],
+        ['Neck provider', providerSummary(health, 'neck')],
+      ]);
+      setRows('next-steps', nextStepRows(health, vision, neck, voice));
+      setBlockers(buildBlockers(health, vision, neck, voice));
     }});
   </script>
 </body>
