@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Any, Callable, Mapping
 
 from eihead.devices.neck_servo import build_neck_servo_adapter
@@ -42,8 +43,132 @@ def build_realtime_eye_service(
     if not _is_honjia_config(config) or not _vision_realtime_enabled(config):
         return None
     gstreamer_config = gstreamer_hailo_config_from_eihead_config(config, config_path=config_path)
-    adapter = adapter_factory(gstreamer_config) if adapter_factory is not None else SafeSubprocessEyeAdapter(gstreamer_config)
+    if adapter_factory is not None:
+        adapter = adapter_factory(gstreamer_config)
+    else:
+        state_path = _camera_state_path(config)
+        adapter = (
+            StateFileEyeAdapter(gstreamer_config, state_path=state_path)
+            if state_path
+            else SafeSubprocessEyeAdapter(gstreamer_config)
+        )
     return RealtimeEyeService(adapter=adapter)
+
+
+class StateFileEyeAdapter:
+    """Read realtime eye status from the persistent vision loop state file."""
+
+    def __init__(
+        self,
+        config: GStreamerHailoRealtimeConfig,
+        *,
+        state_path: str | Path,
+        max_age_s: float = 3.0,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.config = config
+        self.state_path = Path(state_path)
+        self.max_age_s = float(max_age_s)
+        self._clock = clock
+
+    def status(self) -> dict[str, Any]:
+        return self._read()
+
+    def poll(self) -> dict[str, Any]:
+        return self._read()
+
+    def _read(self) -> dict[str, Any]:
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return self._degraded(
+                "persistent vision state file is not available yet",
+                status_reason="vision_state_missing",
+            )
+        except Exception as exc:
+            return self._degraded(
+                f"persistent vision state file is unreadable: {exc.__class__.__name__}: {exc}",
+                status_reason="vision_state_unreadable",
+            )
+        if not isinstance(payload, Mapping):
+            return self._degraded(
+                "persistent vision state file did not contain a JSON object",
+                status_reason="vision_state_invalid",
+            )
+
+        updated_at = _float(payload.get("updated_at_ts"), 0.0)
+        age_s = self._clock() - updated_at if updated_at > 0 else None
+        if age_s is None:
+            return self._degraded(
+                "persistent vision state file is missing updated_at_ts",
+                status_reason="vision_state_missing_timestamp",
+            )
+        if self.max_age_s > 0 and age_s > self.max_age_s:
+            return self._degraded(
+                f"persistent vision state is stale by {age_s:.1f}s",
+                status_reason="vision_state_stale",
+                age_s=age_s,
+            )
+
+        status_payload = payload.get("status_payload")
+        status = dict(status_payload) if isinstance(status_payload, Mapping) else dict(payload)
+        status.setdefault("schema", "eihead.eye.realtime_status.v1")
+        status.setdefault("kind", "realtime_vision_observation")
+        status.setdefault("mode", self.config.mode)
+        status.setdefault("backend", self.config.backend)
+        status.setdefault("source", "eihead.eye.vision_loop")
+        status.setdefault("placeholder", False)
+        status.setdefault("not_wired", False)
+        status.setdefault("stream_ready", bool(payload.get("stream_ready", False)))
+        status.setdefault("degraded", status.get("status") == "degraded")
+        status.setdefault("status_reason", payload.get("status_reason") or status.get("status"))
+        status.setdefault("message", payload.get("message") or "persistent vision state is live")
+        status["state_file"] = {
+            "path": str(self.state_path),
+            "updated_at_ts": updated_at,
+            "age_s": age_s,
+            "source": payload.get("source", "eihead.eye.vision_loop"),
+        }
+        status.setdefault("pipeline", self.config.pipeline_fields())
+        status.setdefault(
+            "devices",
+            {
+                "camera": self.config.camera_device,
+                "hailo": self.config.hailo_device,
+            },
+        )
+        return status
+
+    def _degraded(self, message: str, *, status_reason: str, **details: Any) -> dict[str, Any]:
+        return {
+            "schema": "eihead.eye.realtime_status.v1",
+            "kind": "realtime_vision_observation",
+            "mode": self.config.mode,
+            "status": "degraded",
+            "backend": self.config.backend,
+            "source": "eihead.runtime.native_services.state_file",
+            "placeholder": False,
+            "not_wired": False,
+            "stream_ready": False,
+            "degraded": True,
+            "status_reason": status_reason,
+            "degraded_reason": message,
+            "message": message,
+            "detections": [],
+            "detection_boxes": [],
+            "detection_scores": [],
+            "parse_error_count": 0,
+            "parse_errors": [],
+            "state_file": {
+                "path": str(self.state_path),
+                **{str(key): value for key, value in details.items() if value not in (None, "")},
+            },
+            "pipeline": self.config.pipeline_fields(),
+            "devices": {
+                "camera": self.config.camera_device,
+                "hailo": self.config.hailo_device,
+            },
+        }
 
 
 class SafeSubprocessEyeAdapter:
@@ -283,6 +408,13 @@ def _vision_realtime_enabled(config: Any | None) -> bool:
     return _bool(limits.get("realtime"), True)
 
 
+def _camera_state_path(config: Any | None) -> str:
+    raw = _mapping(getattr(config, "raw", None))
+    devices = _mapping(raw.get("devices"))
+    camera = _mapping(devices.get("camera"))
+    return _text(camera.get("state_path") or camera.get("statePath"), "")
+
+
 def _legacy_detection_config(config: Any, *, config_path: str) -> dict[str, Any]:
     legacy = getattr(config, "legacy", None)
     legacy_path = _text(getattr(legacy, "eibrain_config_path", ""), "")
@@ -409,6 +541,7 @@ print(json.dumps(status.to_dict(), ensure_ascii=False, allow_nan=False))
 __all__ = [
     "EyeAdapterFactory",
     "SafeSubprocessEyeAdapter",
+    "StateFileEyeAdapter",
     "build_native_neck_servo_adapter",
     "build_native_provider_services",
     "build_native_voice_status",

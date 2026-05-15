@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
 
 from eihead.runtime.app import HeadRuntimeApp
 from eihead.monitoring.neck import build_neck_diagnostics_from_app
 from eihead.monitoring.voice import build_voice_diagnostics_from_app
 from eihead.runtime.native_providers import build_native_provider_statuses
-from eihead.runtime.native_services import SafeSubprocessEyeAdapter
+from eihead.eye.vision_loop import build_vision_state_payload, write_vision_state
+from eihead.runtime.native_services import SafeSubprocessEyeAdapter, StateFileEyeAdapter
 from eihead.eye import GStreamerHailoRealtimeConfig
 
 
@@ -374,6 +376,122 @@ def test_safe_subprocess_eye_adapter_degrades_without_crashing_parent() -> None:
     assert payload["stream_ready"] is False
     assert payload["subprocess"]["returncode"] == -11
     assert payload["pipeline"]["camera_device"] == "/dev/video42"
+
+
+def test_state_file_eye_adapter_reads_persistent_vision_loop_state(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    config = GStreamerHailoRealtimeConfig(camera_device="/dev/video42", hailo_device="/dev/hailo0")
+    write_vision_state(
+        state_path,
+        build_vision_state_payload(
+            {
+                "schema": "eihead.eye.realtime_status.v1",
+                "kind": "realtime_vision_observation",
+                "mode": "realtime_stream",
+                "status": "tracking",
+                "backend": "gstreamer_hailo",
+                "stream_ready": True,
+                "not_wired": False,
+                "last_frame_id": "native-42",
+                "detections": [{"label": "person", "score": 0.91}],
+            },
+            config=config,
+            config_path="/etc/eihead/eihead.honjia.yaml",
+            state_path=state_path,
+            interval_s=0.1,
+            updated_at_ts=100.0,
+            pid=123,
+        ),
+    )
+
+    adapter = StateFileEyeAdapter(config, state_path=state_path, clock=lambda: 101.0)
+    payload = adapter.poll()
+
+    assert payload["status"] == "tracking"
+    assert payload["stream_ready"] is True
+    assert payload["not_wired"] is False
+    assert payload["last_frame_id"] == "native-42"
+    assert payload["state_file"]["age_s"] == 1.0
+    assert payload["state_file"]["path"] == str(state_path)
+    assert payload["pipeline"]["camera_device"] == "/dev/video42"
+
+
+def test_state_file_eye_adapter_reports_stale_state_without_polling_camera(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    config = GStreamerHailoRealtimeConfig(camera_device="/dev/video42")
+    write_vision_state(
+        state_path,
+        build_vision_state_payload(
+            {"status": "tracking", "stream_ready": True, "not_wired": False},
+            config=config,
+            config_path="/etc/eihead/eihead.honjia.yaml",
+            state_path=state_path,
+            interval_s=0.1,
+            updated_at_ts=10.0,
+            pid=123,
+        ),
+    )
+
+    adapter = StateFileEyeAdapter(config, state_path=state_path, max_age_s=3.0, clock=lambda: 14.5)
+    payload = adapter.poll()
+
+    assert payload["status"] == "degraded"
+    assert payload["status_reason"] == "vision_state_stale"
+    assert payload["not_wired"] is False
+    assert payload["stream_ready"] is False
+    assert payload["state_file"]["age_s"] == 4.5
+
+
+def test_honjia_runtime_reads_configured_persistent_vision_state_by_default(tmp_path: Path) -> None:
+    state_path = tmp_path / "vision" / "state.json"
+    config_path = tmp_path / "eihead.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia",
+                "devices:",
+                "  camera:",
+                "    path: /dev/video42",
+                f"    state_path: {state_path.as_posix()}",
+                "  hailo:",
+                "    path: /dev/hailo0",
+                "capabilities:",
+                "  software:",
+                "    vision_backend:",
+                "      enabled: true",
+                "      backend: hailo",
+                "      limits:",
+                "        realtime: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    write_vision_state(
+        state_path,
+        build_vision_state_payload(
+            {
+                "status": "tracking",
+                "stream_ready": True,
+                "not_wired": False,
+                "last_frame_id": "state-backed-frame",
+            },
+            config=GStreamerHailoRealtimeConfig(camera_device="/dev/video42"),
+            config_path=str(config_path),
+            state_path=state_path,
+            interval_s=0.1,
+            updated_at_ts=time.time(),
+            pid=123,
+        ),
+    )
+
+    runtime = HeadRuntimeApp.from_config_path(str(config_path), native_environ={})
+    payload = runtime.vision_realtime()
+
+    assert payload is not None
+    assert payload["status"] == "tracking"
+    assert payload["stream_ready"] is True
+    assert payload["last_frame_id"] == "state-backed-frame"
+    assert payload["state_file"]["path"] == str(state_path)
 
 
 def test_head_runtime_exposes_native_neck_status_for_monitoring() -> None:

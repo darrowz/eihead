@@ -55,6 +55,13 @@ fi
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
 
+if [ -f "$RELEASE_DIR/deploy/systemd/eihead-vision-hailo.service" ]; then
+  sudo cp "$RELEASE_DIR/deploy/systemd/eihead-vision-hailo.service" /etc/systemd/system/eihead-vision-hailo.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable eihead-vision-hailo.service >/dev/null
+  sudo systemctl restart eihead-vision-hailo.service
+fi
+
 echo "release=$RELEASE_DIR"
 echo "current=$CURRENT_LINK"
 echo "commit=$COMMIT"

@@ -13,6 +13,7 @@ dependencies = ["PyYAML>=6.0", "eiprotocol>=0.1.0"]
 [project.scripts]
 eihead-runtime = "eihead.runtime.cli:main"
 eihead-verify-hardware = "eihead.runtime.cli:verify_hardware_main"
+eihead-vision-loop = "eihead.eye.vision_loop:main"
 
 [tool.setuptools.packages.find]
 include = [
