@@ -279,6 +279,52 @@ def test_voice_diagnostics_does_not_infer_mouth_status_from_tts_plan_alone() -> 
     assert mouth["text_preview"] == ""
 
 
+def test_voice_diagnostics_preserves_native_dialogue_evidence() -> None:
+    class App:
+        def voice_status(self) -> dict[str, Any]:
+            return {
+                "status": "ready",
+                "voice_dialogue": {
+                    "enabled": True,
+                    "running": True,
+                    "phase": "listening",
+                    "last_status": "listening",
+                    "last_transcript": "你要告诉我内容啊",
+                    "last_reply": "我理解你说的是：你要告诉我内容啊。",
+                    "last_error": "",
+                    "turn_count": 3,
+                    "current_round_id": "voice-3",
+                    "last_stage_latency_ms": {
+                        "listen_asr": 101.2,
+                        "dialogue": 202.3,
+                        "speak": 303.4,
+                        "total": 606.9,
+                    },
+                    "dialogue": {
+                        "provider": "eibrain_subprocess",
+                        "event_name": "ei.voice.asr.final",
+                        "event_id": "evt_123",
+                        "round_id": "voice-3",
+                        "returncode": 0,
+                        "elapsed_ms": 202.1,
+                    },
+                },
+            }
+
+    payload = build_voice_diagnostics_from_app(App(), timestamp=4.0)
+
+    assert payload["dialogue"]["last_transcript"] == "你要告诉我内容啊"
+    assert payload["dialogue"]["last_reply"] == "我理解你说的是：你要告诉我内容啊。"
+    assert payload["dialogue"]["turn_count"] == 3
+    assert payload["dialogue"]["current_round_id"] == "voice-3"
+    assert payload["dialogue"]["last_stage_latency_ms"]["dialogue"] == 202.3
+    assert payload["dialogue"]["dialogue"]["provider"] == "eibrain_subprocess"
+    assert payload["dialogue"]["dialogue"]["event_name"] == "ei.voice.asr.final"
+    assert payload["last_turn"]["transcript"] == "你要告诉我内容啊"
+    assert payload["last_turn"]["reply"] == "我理解你说的是：你要告诉我内容啊。"
+    assert payload["latency"]["stage_latency_ms"]["speak"] == 303.4
+
+
 def test_voice_diagnostics_uses_eivoice_runtime_when_voice_status_returns_none() -> None:
     class App:
         def voice_status(self) -> None:
@@ -352,15 +398,40 @@ class AttachedVoiceRuntimeApp(RuntimePanelApp):
             "ear": {
                 "status": "listening",
                 "provider": "sherpa_onnx",
+                "audio_level": 0.08,
+                "rms_dbfs": -21.6,
+                "vad_triggered": False,
                 "capture": {"status": "running", "details": {"device": "plughw:CARD=U4K,DEV=0"}},
-                "asr": {"enabled": True, "provider": "sherpa_onnx", "provider_state": "ready"},
+                "asr": {"enabled": True, "provider": "sherpa_onnx", "provider_state": "ready", "final_count": 4},
             },
             "mouth": {
                 "status": "idle",
-                "backend": "espeak",
+                "backend": "minimax",
+                "model": "speech-2.8-hd",
+                "voice_id": "female-shaonv",
                 "tts_playback": {"status": "ready", "details": {"device": "plughw:CARD=SPA3700,DEV=0"}},
             },
-            "voice_dialogue": {"enabled": True, "running": True, "phase": "listening"},
+            "voice_dialogue": {
+                "enabled": True,
+                "running": True,
+                "phase": "listening",
+                "last_transcript": "从头你每天早上九点不是要给我发新闻吗",
+                "last_reply": "我现在接口不稳，先给你简短回答：可以。",
+                "turn_count": 4,
+                "last_stage_latency_ms": {
+                    "listen_asr": 1033.08,
+                    "dialogue": 710.51,
+                    "speak": 4889.2,
+                    "total": 6632.79,
+                },
+                "dialogue": {
+                    "provider": "eibrain_subprocess",
+                    "event_name": "ei.voice.asr.final",
+                    "round_id": "voice-1778999400072",
+                    "returncode": 0,
+                    "elapsed_ms": 710.16,
+                },
+            },
             "realtime_audio": {"enabled": True, "running": True, "audio_level": 0.02},
             "readiness_message": "native realtime voice loop is attached",
         }
@@ -420,6 +491,7 @@ def test_web_exposes_eivoice_runtime_panel() -> None:
 
 def test_web_voice_realtime_reports_attached_native_runtime_as_live() -> None:
     with running_server(AttachedVoiceRuntimeApp()) as base_url:
+        body = read_text(f"{base_url}/")
         payload = read_json(f"{base_url}/api/voice/realtime")
         runtime_payload = read_json(f"{base_url}/api/eivoice/runtime")
 
@@ -429,3 +501,12 @@ def test_web_voice_realtime_reports_attached_native_runtime_as_live() -> None:
     assert payload["dialogue"]["running"] is True
     assert "native realtime voice loop is attached" in payload["readiness_message"]
     assert runtime_payload["eivoiceRuntime"]["state"] == "running"
+    assert "听到内容" in body
+    assert "回答内容" in body
+    assert "对话引擎" in body
+    assert "协议事件" in body
+    assert "耗时拆分" in body
+    assert "TTS 播放" in body
+    assert "从头你每天早上九点不是要给我发新闻吗" in body
+    assert "我现在接口不稳，先给你简短回答：可以。" in body
+    assert "eibrain_subprocess" in body

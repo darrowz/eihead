@@ -426,7 +426,7 @@ def _normalize_dialogue(raw: Mapping[str, Any] | None, *, root: Mapping[str, Any
         root.get("readiness_message") if root else None,
         root.get("message") if root else None,
     )
-    return {
+    payload: dict[str, Any] = {
         "phase": phase,
         "last_status": last_status,
         "state": _classify_component_state(mapping, fallback_status=status, role="dialogue"),
@@ -436,6 +436,28 @@ def _normalize_dialogue(raw: Mapping[str, Any] | None, *, root: Mapping[str, Any
         "last_reply": _first_text(mapping.get("last_reply"), root.get("last_reply") if root else None),
         "readiness_message": readiness,
     }
+    last_error = _first_text(mapping.get("last_error"), root.get("last_error") if root else None)
+    if last_error or "last_error" in mapping:
+        payload["last_error"] = last_error
+    turn_count = _first_value(mapping, "turn_count", "utterance_count")
+    if turn_count is None:
+        turn_count = _first_value(root, "turn_count", "utterance_count")
+    if turn_count is not None:
+        payload["turn_count"] = _json_ready(turn_count)
+    current_round_id = _first_value(mapping, "current_round_id", "round_id")
+    if current_round_id is None:
+        current_round_id = _first_value(root, "current_round_id", "round_id")
+    if current_round_id is not None:
+        payload["current_round_id"] = _json_ready(current_round_id)
+    stage_latency = _mapping_from_keys(mapping, "last_stage_latency_ms")
+    if stage_latency is None:
+        stage_latency = _mapping_from_keys(root, "last_stage_latency_ms")
+    if stage_latency is not None:
+        payload["last_stage_latency_ms"] = stage_latency
+    engine = _mapping_from_keys(mapping, "dialogue", "dialogue_engine", "engine")
+    if engine is not None:
+        payload["dialogue"] = engine
+    return payload
 
 
 def _realtime_audio_payload(
@@ -1165,11 +1187,35 @@ def _bottleneck_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, A
 
 
 def _last_turn_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    return (
+    explicit = (
         _mapping_from_keys(data, "last_turn")
         or _mapping_from_keys(dialogue, "last_completed_turn")
         or _mapping_from_keys(dialogue, "last_turn")
     )
+    if explicit is not None:
+        return explicit
+    transcript = _first_text(
+        _first_value(dialogue, "last_transcript"),
+        _first_value(data, "last_transcript"),
+    )
+    reply = _first_text(
+        _first_value(dialogue, "last_reply"),
+        _first_value(data, "last_reply"),
+    )
+    if not transcript and not reply:
+        return None
+    payload: dict[str, Any] = {}
+    if transcript:
+        payload["transcript"] = transcript
+    if reply:
+        payload["reply"] = reply
+    status = _first_text(
+        _first_value(dialogue, "last_status", "phase"),
+        _first_value(data, "last_status", "phase"),
+    )
+    if status:
+        payload["status"] = status
+    return payload
 
 
 def _voice_chain_readiness_payload(
@@ -1409,9 +1455,13 @@ def _dialogue_mapping(mapping: Mapping[str, Any] | None) -> dict[str, Any] | Non
         "last_status",
         "last_transcript",
         "last_reply",
+        "last_error",
+        "turn_count",
+        "utterance_count",
         "last_completed_turn",
         "last_stage_latency_ms",
         "last_latency_s",
+        "dialogue",
         "last_bottleneck_stage",
         "last_bottleneck_ms",
         "current_round_id",

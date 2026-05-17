@@ -681,6 +681,14 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_chain_readiness = _display_value(_voice_chain_readiness_summary(voice.get("voice_chain_readiness")))
     voice_chain_bottleneck = _display_value(_voice_chain_bottleneck_summary(voice.get("voice_chain_readiness")))
     voice_readiness = _display_value(voice.get("readiness_message") or "unknown")
+    voice_heard_text = _display_value(_voice_heard_text(voice))
+    voice_reply_text = _display_value(_voice_reply_text(voice))
+    voice_dialogue_engine = _display_value(_voice_dialogue_engine_summary(voice))
+    voice_protocol_event = _display_value(_voice_protocol_event_summary(voice))
+    voice_latency_breakdown = _display_value(_voice_latency_breakdown_summary(voice))
+    voice_tts_playback = _display_value(_voice_tts_playback_summary(voice))
+    voice_mic_vad = _display_value(_voice_mic_vad_summary(voice))
+    voice_asr_detail = _display_value(_voice_asr_detail_summary(voice))
     eivoice_conversation = _display_value(eivoice_panel.get("conversationState", "unknown"))
     eivoice_dropped_total = _display_value(_metric_value(eivoice_panel.get("droppedTotal")))
     eivoice_queue_summary = eivoice_panel.get("queueSummary") if isinstance(eivoice_panel.get("queueSummary"), Mapping) else {}
@@ -810,6 +818,14 @@ def _render_index(app: Any, timestamp: float) -> str:
     <h2>Voice Diagnostics</h2>
     <section class="grid">
       <div class="card"><div class="label">Status</div><span class="metric">{voice_state}</span></div>
+      <div class="card hot"><div class="label">听到内容</div><span class="metric">{voice_heard_text}</span></div>
+      <div class="card hot"><div class="label">回答内容</div><span class="metric">{voice_reply_text}</span></div>
+      <div class="card"><div class="label">对话引擎</div><span class="metric">{voice_dialogue_engine}</span></div>
+      <div class="card"><div class="label">协议事件</div><span class="metric">{voice_protocol_event}</span></div>
+      <div class="card"><div class="label">耗时拆分</div><span class="metric">{voice_latency_breakdown}</span></div>
+      <div class="card"><div class="label">TTS 播放</div><span class="metric">{voice_tts_playback}</span></div>
+      <div class="card"><div class="label">麦克风/VAD</div><span class="metric">{voice_mic_vad}</span></div>
+      <div class="card"><div class="label">ASR 识别</div><span class="metric">{voice_asr_detail}</span></div>
       <div class="card"><div class="label">Ear</div><span class="metric">{voice_ear}</span></div>
       <div class="card"><div class="label">Mouth</div><span class="metric">{voice_mouth}</span></div>
       <div class="card"><div class="label">Dialogue</div><span class="metric">{voice_dialogue}</span></div>
@@ -1564,6 +1580,170 @@ def _voice_dialogue_summary(value: Any) -> str:
     if phase:
         return str(phase)
     return "unknown"
+
+
+def _voice_heard_text(value: Any) -> str:
+    dialogue, last_turn = _voice_dialogue_and_turn(value)
+    return str(
+        dialogue.get("last_transcript")
+        or last_turn.get("transcript")
+        or last_turn.get("text")
+        or "unknown"
+    )
+
+
+def _voice_reply_text(value: Any) -> str:
+    dialogue, last_turn = _voice_dialogue_and_turn(value)
+    return str(
+        dialogue.get("last_reply")
+        or last_turn.get("reply")
+        or last_turn.get("response")
+        or "unknown"
+    )
+
+
+def _voice_dialogue_engine_summary(value: Any) -> str:
+    dialogue, _ = _voice_dialogue_and_turn(value)
+    engine = dialogue.get("dialogue")
+    if not isinstance(engine, Mapping):
+        return "unknown"
+    parts: list[str] = []
+    provider = engine.get("provider")
+    if provider:
+        parts.append(str(provider))
+    returncode = engine.get("returncode")
+    if returncode not in (None, ""):
+        parts.append(f"returncode={returncode}")
+    elapsed_ms = engine.get("elapsed_ms")
+    if elapsed_ms not in (None, ""):
+        parts.append(f"{elapsed_ms}ms")
+    return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_protocol_event_summary(value: Any) -> str:
+    dialogue, _ = _voice_dialogue_and_turn(value)
+    engine = dialogue.get("dialogue")
+    if not isinstance(engine, Mapping):
+        return "unknown"
+    event = engine.get("event_name")
+    round_id = engine.get("round_id") or dialogue.get("current_round_id")
+    event_id = engine.get("event_id")
+    parts = [str(item) for item in (event, round_id, _short_identifier(event_id)) if item]
+    return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_latency_breakdown_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    latency = value.get("latency")
+    stage_latency = latency.get("stage_latency_ms") if isinstance(latency, Mapping) else None
+    if not isinstance(stage_latency, Mapping):
+        dialogue, _ = _voice_dialogue_and_turn(value)
+        stage_latency = dialogue.get("last_stage_latency_ms")
+    if not isinstance(stage_latency, Mapping):
+        return "unknown"
+    labels = (
+        ("listen_asr", "ASR"),
+        ("dialogue", "eibrain"),
+        ("speak", "TTS"),
+        ("total", "total"),
+    )
+    parts = [
+        f"{label} {stage_latency[key]}ms"
+        for key, label in labels
+        if stage_latency.get(key) not in (None, "")
+    ]
+    return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_tts_playback_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    mouth = value.get("mouth")
+    if not isinstance(mouth, Mapping):
+        return "unknown"
+    playback = mouth.get("tts_playback")
+    details = playback.get("details") if isinstance(playback, Mapping) else None
+    if not isinstance(details, Mapping):
+        details = {}
+    status = mouth.get("status") or (playback.get("status") if isinstance(playback, Mapping) else None)
+    backend = mouth.get("backend") or details.get("provider")
+    model = mouth.get("model") or details.get("model")
+    voice_id = mouth.get("voice_id") or details.get("voice_id")
+    device = details.get("device")
+    parts = [str(item) for item in (status, backend, model, voice_id, device) if item]
+    return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_mic_vad_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    ear = value.get("ear")
+    realtime_audio = value.get("realtime_audio")
+    if not isinstance(ear, Mapping):
+        ear = {}
+    if not isinstance(realtime_audio, Mapping):
+        realtime_audio = {}
+    capture = ear.get("capture")
+    details = capture.get("details") if isinstance(capture, Mapping) else None
+    if not isinstance(details, Mapping):
+        details = {}
+    device = details.get("device")
+    audio_level = ear.get("audio_level", realtime_audio.get("audio_level"))
+    rms_dbfs = ear.get("rms_dbfs", realtime_audio.get("rms_dbfs"))
+    vad = ear.get("vad_triggered", realtime_audio.get("vad_triggered"))
+    parts: list[str] = []
+    if device:
+        parts.append(str(device))
+    if audio_level not in (None, ""):
+        parts.append(f"level={audio_level}")
+    if rms_dbfs not in (None, ""):
+        parts.append(f"rms={rms_dbfs}dBFS")
+    if vad not in (None, ""):
+        parts.append(f"vad={vad}")
+    return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_asr_detail_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    ear = value.get("ear")
+    if not isinstance(ear, Mapping):
+        return "unknown"
+    asr = ear.get("asr")
+    if not isinstance(asr, Mapping):
+        asr = {}
+    diagnostics = asr.get("provider_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        diagnostics = {}
+    provider = ear.get("provider") or asr.get("provider") or diagnostics.get("provider")
+    state = asr.get("provider_state") or diagnostics.get("state") or asr.get("status")
+    model_type = diagnostics.get("model_type")
+    final_count = asr.get("final_count")
+    parts = [str(item) for item in (provider, state, model_type) if item]
+    if final_count not in (None, ""):
+        parts.append(f"final={final_count}")
+    return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_dialogue_and_turn(value: Any) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    if not isinstance(value, Mapping):
+        return {}, {}
+    dialogue = value.get("dialogue")
+    last_turn = value.get("last_turn")
+    return (
+        dialogue if isinstance(dialogue, Mapping) else {},
+        last_turn if isinstance(last_turn, Mapping) else {},
+    )
+
+
+def _short_identifier(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    text = str(value)
+    if len(text) <= 14:
+        return text
+    return f"{text[:10]}..."
 
 
 def _voice_latency_total_ms(value: Any) -> Any:
