@@ -323,6 +323,16 @@ def test_voice_diagnostics_preserves_native_dialogue_evidence() -> None:
     assert payload["last_turn"]["transcript"] == "你要告诉我内容啊"
     assert payload["last_turn"]["reply"] == "我理解你说的是：你要告诉我内容啊。"
     assert payload["latency"]["stage_latency_ms"]["speak"] == 303.4
+    assert payload["optimization"]["latency_ms"] == {
+        "listen_asr": 101.2,
+        "dialogue": 202.3,
+        "speak": 303.4,
+        "total": 606.9,
+    }
+    assert payload["optimization"]["bottleneck"]["stage"] == "speak"
+    assert payload["optimization"]["bottleneck"]["latency_ms"] == 303.4
+    assert payload["optimization"]["dialogue_engine"]["provider"] == "eibrain_subprocess"
+    assert payload["optimization"]["dialogue_engine"]["elapsed_ms"] == 202.1
 
 
 def test_voice_diagnostics_uses_eivoice_runtime_when_voice_status_returns_none() -> None:
@@ -506,7 +516,13 @@ def test_web_voice_realtime_reports_attached_native_runtime_as_live() -> None:
     assert "对话引擎" in body
     assert "协议事件" in body
     assert "耗时拆分" in body
+    assert "性能优化" in body
     assert "TTS 播放" in body
     assert "从头你每天早上九点不是要给我发新闻吗" in body
     assert "我现在接口不稳，先给你简短回答：可以。" in body
     assert "eibrain_subprocess" in body
+    assert payload["optimization"]["latency_ms"]["listen_asr"] == 1033.08
+    assert payload["optimization"]["latency_ms"]["dialogue"] == 710.51
+    assert payload["optimization"]["latency_ms"]["speak"] == 4889.2
+    assert payload["optimization"]["bottleneck"]["stage"] == "speak"
+    assert payload["optimization"]["realtime_audio"]["audio_level"] == 0.02

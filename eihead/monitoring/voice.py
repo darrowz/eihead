@@ -117,6 +117,15 @@ def _build_voice_payload(
         latency=latency,
     )
     _merge_realtime_latency(latency, data=data, dialogue=dialogue_source, realtime_session=realtime_session)
+    optimization = _optimization_payload(
+        data,
+        dialogue_source,
+        ear=ear,
+        mouth=mouth,
+        realtime_audio=realtime_audio,
+        latency=latency,
+        bottleneck=bottleneck,
+    )
     is_wired = derived_wired if wired is None else bool(wired and derived_wired)
     readiness_message = _voice_readiness_message(
         data,
@@ -154,6 +163,7 @@ def _build_voice_payload(
         "streaming": streaming,
         "microfeedback": microfeedback,
         "latency": latency,
+        "optimization": optimization,
         "realtime_session": realtime_session,
         "realtime_events": realtime_events,
         "event_count": event_count,
@@ -457,6 +467,12 @@ def _normalize_dialogue(raw: Mapping[str, Any] | None, *, root: Mapping[str, Any
     engine = _mapping_from_keys(mapping, "dialogue", "dialogue_engine", "engine")
     if engine is not None:
         payload["dialogue"] = engine
+    for key in ("conversation_active", "wake_word_required", "wake_words", "end_phrases", "last_gate_reason"):
+        value = _first_value(mapping, key)
+        if value is None:
+            value = _first_value(root, key) if root else None
+        if value is not None:
+            payload[key] = _json_ready(value)
     return payload
 
 
@@ -1183,6 +1199,142 @@ def _bottleneck_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, A
     return {
         "stage": stage or None,
         "latency_ms": latency_ms,
+    }
+
+
+def _optimization_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    *,
+    ear: Mapping[str, Any] | None,
+    mouth: Mapping[str, Any] | None,
+    realtime_audio: Mapping[str, Any] | None,
+    latency: Mapping[str, Any] | None,
+    bottleneck: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    latency_ms = _latency_ms_payload(latency)
+    return {
+        "latency_ms": latency_ms,
+        "bottleneck": _optimization_bottleneck(latency_ms, bottleneck),
+        "wakeword": _optimization_wakeword(data, dialogue),
+        "dialogue": _optimization_dialogue(dialogue),
+        "dialogue_engine": _optimization_dialogue_engine(dialogue),
+        "asr": _optimization_asr(ear),
+        "tts": _optimization_tts(mouth),
+        "realtime_audio": _optimization_realtime_audio(realtime_audio),
+    }
+
+
+def _latency_ms_payload(latency: Mapping[str, Any] | None) -> dict[str, float]:
+    stage_latency = _mapping_from_keys(latency, "stage_latency_ms")
+    if stage_latency is None:
+        return {}
+    payload: dict[str, float] = {}
+    for key, value in stage_latency.items():
+        number = _float_or_none(value)
+        if number is not None:
+            payload[str(key)] = number
+    return payload
+
+
+def _optimization_bottleneck(
+    latency_ms: Mapping[str, float],
+    explicit: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    stage = _first_text(_first_value(explicit, "stage"))
+    latency_value = _float_or_none(_first_value(explicit, "latency_ms", "latencyMs"))
+    if stage or latency_value is not None:
+        return {"stage": stage or None, "latency_ms": latency_value}
+    candidates = {
+        key: value
+        for key, value in latency_ms.items()
+        if key not in {"total", "overhead"} and value is not None
+    }
+    if not candidates:
+        return {"stage": None, "latency_ms": None}
+    stage, latency_value = max(candidates.items(), key=lambda item: item[1])
+    return {"stage": stage, "latency_ms": latency_value}
+
+
+def _optimization_wakeword(data: Mapping[str, Any] | None, dialogue: Mapping[str, Any] | None) -> dict[str, Any]:
+    wakeword = _mapping_from_keys(data, "wakeword", "wake_word")
+    if wakeword is None:
+        runtime = _mapping_from_keys(data, "eivoice_runtime")
+        wakeword = _mapping_from_keys(runtime, "wakeword", "wake_word")
+    return {
+        "enabled": _first_value(wakeword, "enabled") if wakeword is not None else _first_value(dialogue, "wake_word_required"),
+        "state": _first_text(
+            _first_value(wakeword, "state"),
+            "active" if _truthy(_first_value(dialogue, "conversation_active")) else "",
+        ),
+        "conversation_active": _truthy(_first_value(dialogue, "conversation_active")),
+        "last_gate_reason": _first_text(
+            _first_value(wakeword, "last_gate_reason"),
+            _first_value(dialogue, "last_gate_reason"),
+        ),
+    }
+
+
+def _optimization_dialogue(dialogue: Mapping[str, Any] | None) -> dict[str, Any]:
+    return {
+        "phase": _first_text(_first_value(dialogue, "phase")),
+        "last_status": _first_text(_first_value(dialogue, "last_status")),
+        "turn_count": _json_ready(_first_value(dialogue, "turn_count")),
+        "current_round_id": _json_ready(_first_value(dialogue, "current_round_id", "round_id")),
+        "last_transcript": _first_text(_first_value(dialogue, "last_transcript")),
+        "last_reply": _first_text(_first_value(dialogue, "last_reply")),
+    }
+
+
+def _optimization_dialogue_engine(dialogue: Mapping[str, Any] | None) -> dict[str, Any]:
+    engine = _mapping_from_keys(dialogue, "dialogue", "dialogue_engine", "engine") or {}
+    return {
+        "provider": _first_text(_first_value(engine, "provider")),
+        "event_name": _first_text(_first_value(engine, "event_name", "eventName")),
+        "round_id": _json_ready(_first_value(engine, "round_id", "roundId")),
+        "returncode": _json_ready(_first_value(engine, "returncode")),
+        "elapsed_ms": _float_or_none(_first_value(engine, "elapsed_ms", "elapsedMs", "latency_ms", "latencyMs")),
+    }
+
+
+def _optimization_asr(ear: Mapping[str, Any] | None) -> dict[str, Any]:
+    asr = _mapping_from_keys(ear, "asr") or {}
+    diagnostics = _mapping_from_keys(asr, "provider_diagnostics", "details") or {}
+    return {
+        "provider": _first_text(_first_value(ear, "provider"), _first_value(asr, "provider"), _first_value(diagnostics, "provider")),
+        "state": _first_text(_first_value(asr, "provider_state", "state", "status"), _first_value(diagnostics, "state")),
+        "final_count": _json_ready(_first_value(asr, "final_count", "finalCount")),
+        "last_decode_ms": _float_or_none(_first_value(diagnostics, "last_decode_ms", "lastDecodeMs", "decode_elapsed_ms")),
+        "last_error": _first_text(_first_value(diagnostics, "last_error", "lastError")),
+    }
+
+
+def _optimization_tts(mouth: Mapping[str, Any] | None) -> dict[str, Any]:
+    playback = _mapping_from_keys(mouth, "tts_playback") or {}
+    details = _mapping_from_keys(playback, "details") or {}
+    stage_latency = _mapping_from_keys(mouth, "stage_latency_ms") or {}
+    return {
+        "backend": _first_text(_first_value(mouth, "backend"), _first_value(details, "provider")),
+        "model": _first_text(_first_value(mouth, "model"), _first_value(details, "model")),
+        "voice_id": _first_text(_first_value(mouth, "voice_id"), _first_value(details, "voice_id", "voiceId")),
+        "playback_state": _first_text(_first_value(mouth, "playback_state"), _first_value(playback, "status")),
+        "speak_ms": _float_or_none(_first_value(stage_latency, "speak")),
+        "playback_elapsed_ms": _float_or_none(_first_value(details, "playback_elapsed_ms", "playbackElapsedMs")),
+    }
+
+
+def _optimization_realtime_audio(realtime_audio: Mapping[str, Any] | None) -> dict[str, Any]:
+    return {
+        "enabled": _json_ready(_first_value(realtime_audio, "enabled")),
+        "running": _json_ready(_first_value(realtime_audio, "running")),
+        "audio_level": _float_or_none(_first_value(realtime_audio, "audio_level", "rms")),
+        "rms_dbfs": _float_or_none(_first_value(realtime_audio, "rms_dbfs", "rmsDbfs")),
+        "vad_triggered": _json_ready(_first_value(realtime_audio, "vad_triggered", "vadTriggered")),
+        "captured_ms": _float_or_none(_first_value(realtime_audio, "captured_ms", "capturedMs")),
+        "voice_ms": _float_or_none(_first_value(realtime_audio, "voice_ms", "voiceMs")),
+        "silence_after_voice_ms": _float_or_none(
+            _first_value(realtime_audio, "silence_after_voice_ms", "silenceAfterVoiceMs")
+        ),
     }
 
 

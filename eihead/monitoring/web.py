@@ -686,6 +686,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_dialogue_engine = _display_value(_voice_dialogue_engine_summary(voice))
     voice_protocol_event = _display_value(_voice_protocol_event_summary(voice))
     voice_latency_breakdown = _display_value(_voice_latency_breakdown_summary(voice))
+    voice_optimization = _display_value(_voice_optimization_summary(voice.get("optimization")))
     voice_tts_playback = _display_value(_voice_tts_playback_summary(voice))
     voice_mic_vad = _display_value(_voice_mic_vad_summary(voice))
     voice_asr_detail = _display_value(_voice_asr_detail_summary(voice))
@@ -823,6 +824,7 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">对话引擎</div><span class="metric">{voice_dialogue_engine}</span></div>
       <div class="card"><div class="label">协议事件</div><span class="metric">{voice_protocol_event}</span></div>
       <div class="card"><div class="label">耗时拆分</div><span class="metric">{voice_latency_breakdown}</span></div>
+      <div class="card hot"><div class="label">性能优化</div><span class="metric">{voice_optimization}</span></div>
       <div class="card"><div class="label">TTS 播放</div><span class="metric">{voice_tts_playback}</span></div>
       <div class="card"><div class="label">麦克风/VAD</div><span class="metric">{voice_mic_vad}</span></div>
       <div class="card"><div class="label">ASR 识别</div><span class="metric">{voice_asr_detail}</span></div>
@@ -1210,6 +1212,22 @@ def _render_lightweight_index(timestamp: float) -> str:
       const chain = voice.voice_chain_readiness || {{}};
       return first(voice.readiness_message, chain.readinessMessage, chain.summary, '未知');
     }}
+    function optimizationSummary(optimization) {{
+      const latency = optimization.latency_ms || {{}};
+      const bottleneck = optimization.bottleneck || {{}};
+      const wake = optimization.wakeword || {{}};
+      const audio = optimization.realtime_audio || {{}};
+      const parts = [];
+      if (bottleneck.stage) parts.push(`瓶颈=${{bottleneck.stage}} ${{metric(bottleneck.latency_ms, 'ms')}}`);
+      if (latency.listen_asr !== undefined) parts.push(`ASR=${{metric(latency.listen_asr, 'ms')}}`);
+      if (latency.dialogue !== undefined) parts.push(`eibrain=${{metric(latency.dialogue, 'ms')}}`);
+      if (latency.speak !== undefined) parts.push(`TTS=${{metric(latency.speak, 'ms')}}`);
+      if (latency.total !== undefined) parts.push(`总=${{metric(latency.total, 'ms')}}`);
+      if (wake.state || wake.last_gate_reason) parts.push(`唤醒=${{text(wake.state || wake.last_gate_reason)}}`);
+      if (audio.audio_level !== undefined) parts.push(`level=${{metric(audio.audio_level)}}`);
+      if (audio.rms_dbfs !== undefined) parts.push(`rms=${{metric(audio.rms_dbfs, 'dBFS')}}`);
+      return parts.length ? parts.join(' / ') : '未知';
+    }}
     function voiceTestLevel(result) {{
       if (result.rms_dbfs === undefined && result.peak_dbfs === undefined) return '未知';
       return `RMS=${{metric(result.rms_dbfs, ' dBFS')}} / 峰值=${{metric(result.peak_dbfs, ' dBFS')}}`;
@@ -1326,6 +1344,7 @@ def _render_lightweight_index(timestamp: float) -> str:
         ['事件数', metric(voice.event_count)],
         ['首 token', metric(((voice.latency || {{}}).stage_latency_ms || {{}}).first_reply_token, 'ms')],
         ['首语音', metric(((voice.latency || {{}}).stage_latency_ms || {{}}).first_speech, 'ms')],
+        ['性能优化', optimizationSummary(voice.optimization || {{}})],
         ['Readiness', voiceReadiness(voice)],
       ]);
       setRows('health-evidence', [
@@ -1653,6 +1672,44 @@ def _voice_latency_breakdown_summary(value: Any) -> str:
         for key, label in labels
         if stage_latency.get(key) not in (None, "")
     ]
+    return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_optimization_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    latency = value.get("latency_ms")
+    if not isinstance(latency, Mapping):
+        latency = {}
+    bottleneck = value.get("bottleneck")
+    if not isinstance(bottleneck, Mapping):
+        bottleneck = {}
+    wakeword = value.get("wakeword")
+    if not isinstance(wakeword, Mapping):
+        wakeword = {}
+    realtime_audio = value.get("realtime_audio")
+    if not isinstance(realtime_audio, Mapping):
+        realtime_audio = {}
+    parts: list[str] = []
+    stage = bottleneck.get("stage")
+    bottleneck_ms = bottleneck.get("latency_ms")
+    if stage:
+        parts.append(f"瓶颈 {stage} {_metric_value(bottleneck_ms, suffix='ms')}")
+    for key, label in (
+        ("listen_asr", "ASR"),
+        ("dialogue", "eibrain"),
+        ("speak", "TTS"),
+        ("total", "总"),
+    ):
+        if latency.get(key) not in (None, ""):
+            parts.append(f"{label} {_metric_value(latency.get(key), suffix='ms')}")
+    wake_state = wakeword.get("state") or wakeword.get("last_gate_reason")
+    if wake_state:
+        parts.append(f"唤醒 {wake_state}")
+    if realtime_audio.get("audio_level") not in (None, ""):
+        parts.append(f"level {realtime_audio.get('audio_level')}")
+    if realtime_audio.get("rms_dbfs") not in (None, ""):
+        parts.append(f"rms {realtime_audio.get('rms_dbfs')}dBFS")
     return " / ".join(parts) if parts else "unknown"
 
 
