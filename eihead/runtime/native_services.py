@@ -325,6 +325,7 @@ def build_native_neck_servo_adapter(config: Any | None) -> Any | None:
         servo_id=_int(neck.get("servo_id") or neck.get("servoId"), 1),
         enabled=_bool(neck.get("enabled"), True),
         mock=_bool(neck.get("mock"), False),
+        hardware_verified=_bool(neck.get("hardware_verified") or neck.get("hardwareVerified"), False),
     )
 
 

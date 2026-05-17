@@ -34,7 +34,7 @@ class NeckServoCommandAdapter:
             "available": available,
             "reason": "neck_servo_adapter_ready" if available else str(driver_status.get("reason") or "driver_unavailable"),
             "servo_id": self.servo_id,
-            "hardware_verified": False,
+            "hardware_verified": _optional_bool(driver_status.get("hardware_verified")) is True,
             "driver": driver_status,
         }
 
@@ -138,12 +138,14 @@ class RaspbotServoDriver:
         servo_id: int = 1,
         enabled: bool = True,
         mock: bool = False,
+        hardware_verified: bool = False,
     ) -> None:
         self.bus = int(bus)
         self.addr = int(addr)
         self.servo_id = int(servo_id)
         self.enabled = bool(enabled)
         self.mock = bool(mock)
+        self.hardware_verified = bool(hardware_verified)
         self.device_path = f"/dev/i2c-{self.bus}"
         self.last_command: tuple[int, int] | None = None
 
@@ -161,7 +163,7 @@ class RaspbotServoDriver:
             "device": self.device_path,
             "device_exists": device_exists,
             "mock": self.mock,
-            "hardware_verified": False,
+            "hardware_verified": self.hardware_verified,
         }
 
     def ctrl_servo(self, angle: int, servo_id: int | None = None) -> list[int]:
@@ -194,6 +196,7 @@ def build_neck_servo_adapter(
     addr: int = 0x2B,
     enabled: bool = True,
     mock: bool = False,
+    hardware_verified: bool = False,
 ) -> NeckServoCommandAdapter | UnavailableNeckServoCommandAdapter:
     """Return a narrow injected-driver adapter only on honjia."""
 
@@ -210,6 +213,7 @@ def build_neck_servo_adapter(
             servo_id=servo_id,
             enabled=enabled,
             mock=mock,
+            hardware_verified=hardware_verified,
         )
     return NeckServoCommandAdapter(driver, servo_id=servo_id)
 
@@ -256,6 +260,22 @@ def _optional_int(value: Any) -> int | None:
     if not math.isfinite(number):
         return None
     return int(number)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, int):
+        return bool(value)
+    return None
 
 
 def _json_safe(value: Any) -> Any:

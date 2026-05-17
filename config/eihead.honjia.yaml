@@ -47,6 +47,7 @@ devices:
     axis: yaw
     i2c_addr: "0x2B"
     servo_id: 1
+    hardware_verified: true
     pan_deg: [0, 180]
     tilt_deg: null
 

@@ -26,6 +26,7 @@ yaw = _load_module("eihead_neck_yaw_under_test", "eihead/organs/neck/yaw.py")
 neck_servo = _load_module("eihead_neck_servo_under_test", "eihead/devices/neck_servo.py")
 
 NeckServoCommandAdapter = neck_servo.NeckServoCommandAdapter
+RaspbotServoDriver = neck_servo.RaspbotServoDriver
 YawControlConfig = yaw.YawControlConfig
 YawControlState = yaw.YawControlState
 YawController = yaw.YawController
@@ -176,6 +177,18 @@ def test_build_neck_servo_adapter_is_safely_unavailable_off_honjia() -> None:
         "angle": 97,
     }
     assert json.loads(json.dumps(outcome, allow_nan=False)) == outcome
+
+
+def test_honjia_pan_servo_status_can_report_physical_verification() -> None:
+    driver = RaspbotServoDriver(mock=True, servo_id=1, hardware_verified=True)
+    adapter = NeckServoCommandAdapter(driver, servo_id=1)
+
+    status = adapter.status()
+
+    assert status["status"] == "ready"
+    assert status["servo_id"] == 1
+    assert status["hardware_verified"] is True
+    assert status["driver"]["hardware_verified"] is True
 
 
 def test_runtime_routes_move_head_through_native_pan_servo_boundary_and_reports_suppression() -> None:
