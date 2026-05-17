@@ -91,7 +91,7 @@ capabilities:
       cwd: /home/darrow/dev-project/eibrain
       config_path: /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml
       pythonpath: /home/darrow/dev-project/eibrain:/dev-project/eiprotocol
-      timeout_s: 12
+      timeout_s: 55
       session_id: honjia-voice
       actor_id: darrow
       head_instance_id: honjia

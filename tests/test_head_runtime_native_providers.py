@@ -626,7 +626,7 @@ def test_native_voice_loop_config_reads_honjia_audio_devices_and_lstm_model_type
                 "      cwd: /home/darrow/dev-project/eibrain",
                 "      config_path: /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml",
                 "      pythonpath: /home/darrow/dev-project/eibrain:/dev-project/eiprotocol",
-                "      timeout_s: 12",
+                "      timeout_s: 55",
                 "      session_id: honjia-voice",
                 "      actor_id: darrow",
             ]
@@ -665,7 +665,7 @@ def test_native_voice_loop_config_reads_honjia_audio_devices_and_lstm_model_type
     assert loop_config.dialogue_cwd == "/home/darrow/dev-project/eibrain"
     assert loop_config.dialogue_config_path == "/home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml"
     assert loop_config.dialogue_pythonpath == "/home/darrow/dev-project/eibrain:/dev-project/eiprotocol"
-    assert loop_config.dialogue_timeout_s == 12
+    assert loop_config.dialogue_timeout_s == 55
     assert loop_config.dialogue_session_id == "honjia-voice"
     assert loop_config.dialogue_actor_id == "darrow"
     assert runtime is not None
