@@ -105,7 +105,13 @@ def _status_from_env(provider_name: str, environ: Mapping[str, str]) -> NativePr
         return None
     provider = _string_value(environ.get(f"{prefix}_PROVIDER"))
     reason = _string_value(environ.get(f"{prefix}_REASON"))
-    return NativeProviderStatus(status, provider=provider, reason=reason)
+    hardware_verified = _optional_bool(environ.get(f"{prefix}_HARDWARE_VERIFIED"))
+    return NativeProviderStatus(
+        status,
+        provider=provider,
+        reason=reason,
+        hardware_verified=hardware_verified,
+    )
 
 
 def _status_from_probe(

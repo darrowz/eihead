@@ -169,6 +169,7 @@ def test_env_can_report_neck_wired_before_adapter_injection() -> None:
             "EIHEAD_NATIVE_NECK_STATUS": "wired",
             "EIHEAD_NATIVE_NECK_PROVIDER": "raspbot-i2c",
             "EIHEAD_NATIVE_NECK_REASON": "verified_i2c_bus",
+            "EIHEAD_NATIVE_NECK_HARDWARE_VERIFIED": "true",
         },
     )
 
@@ -176,6 +177,7 @@ def test_env_can_report_neck_wired_before_adapter_injection() -> None:
         "status": "wired",
         "provider": "raspbot-i2c",
         "reason": "verified_i2c_bus",
+        "hardware_verified": True,
     }
 
 
