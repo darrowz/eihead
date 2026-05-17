@@ -9,7 +9,13 @@ from eihead.monitoring.neck import build_neck_diagnostics_from_app
 from eihead.monitoring.voice import build_voice_diagnostics_from_app
 from eihead.runtime.native_providers import build_native_provider_statuses
 from eihead.eye.vision_loop import build_vision_state_payload, write_vision_state
-from eihead.runtime.native_services import SafeSubprocessEyeAdapter, StateFileEyeAdapter
+from eihead.runtime.config import load_eihead_config
+from eihead.runtime.native_services import (
+    SafeSubprocessEyeAdapter,
+    StateFileEyeAdapter,
+    build_native_voice_runtime,
+    native_voice_loop_config_from_eihead_config,
+)
 from eihead.eye import GStreamerHailoRealtimeConfig
 
 
@@ -82,6 +88,24 @@ class FakeNativeEyeAdapter:
             "camera_device": "/dev/video42",
             "hailo_device": "/dev/hailo0",
         }
+
+
+class FakeNativeVoiceRuntime:
+    def __init__(self) -> None:
+        self.started = 0
+
+    def start(self) -> None:
+        self.started += 1
+
+    def voice_status(self) -> dict[str, object]:
+        return {
+            "status": "ready",
+            "voice_dialogue": {"enabled": True, "running": True, "phase": "listening"},
+            "realtime_audio": {"enabled": True, "running": True},
+        }
+
+    def status(self) -> dict[str, object]:
+        return {"state": "running", "health": "healthy", "running": True}
 
 
 def test_from_config_path_reports_native_provider_boundaries_without_hardware(tmp_path: Path) -> None:
@@ -535,6 +559,9 @@ def test_from_config_path_exposes_degraded_voice_diagnostics_from_honjia_config(
                 "      enabled: true",
                 "      provider: minimax",
                 "      model: speech-2.8-hd",
+                "      command: espeak-ng",
+                "      voice: cmn",
+                "      rate_wpm: 150",
             ]
         ),
         encoding="utf-8",
@@ -549,3 +576,153 @@ def test_from_config_path_exposes_degraded_voice_diagnostics_from_honjia_config(
     assert payload["ear"]["provider"] == "sherpa_onnx"
     assert payload["mouth"]["backend"] == "minimax"
     assert payload["realtime_audio"]["enabled"] is False
+
+
+def test_native_voice_loop_config_reads_honjia_audio_devices_and_lstm_model_type(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MINIMAX_API_KEY", "secret-minimax")
+    config_path = tmp_path / "eihead.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia",
+                "devices:",
+                "  microphone:",
+                "    device: plughw:CARD=U4K,DEV=0",
+                "    sample_rate: 16000",
+                "    channels: 1",
+                "  speaker:",
+                "    device: plughw:CARD=SPA3700,DEV=0",
+                "capabilities:",
+                "  software:",
+                "    asr:",
+                "      enabled: true",
+                "      provider: sherpa_onnx",
+                "      model: sherpa-onnx-streaming",
+                "      model_dir: /home/darrow/eibrain/models/asr/sherpa-onnx-streaming",
+                "      model_type: lstm",
+                "      vad_rms_threshold: 0.13",
+                "      vad_min_voice_ms: 600",
+                "      vad_end_silence_ms: 900",
+                "      max_utterance_ms: 5000",
+                "      limits:",
+                "        streaming: true",
+                "    tts:",
+                "      enabled: true",
+                "      provider: minimax",
+                "      model: speech-2.8-hd",
+                "      api_base_url: https://api.minimaxi.com",
+                "      voice_id: female-shaonv",
+                "      audio_format: wav",
+                "      sample_rate: 32000",
+                "      command: espeak-ng",
+                "      voice: cmn",
+                "      rate_wpm: 150",
+                "      playback_echo_cooldown_ms: 1200",
+                "    dialogue:",
+                "      enabled: true",
+                "      provider: eibrain_subprocess",
+                "      command: /opt/eihead/current/.venv/bin/python",
+                "      module: apps.cognitive_runtime",
+                "      cwd: /home/darrow/dev-project/eibrain",
+                "      config_path: /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml",
+                "      pythonpath: /home/darrow/dev-project/eibrain:/dev-project/eiprotocol",
+                "      timeout_s: 12",
+                "      session_id: honjia-voice",
+                "      actor_id: darrow",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_eihead_config(config_path)
+    loop_config = native_voice_loop_config_from_eihead_config(config)
+    runtime = build_native_voice_runtime(config)
+
+    assert loop_config.microphone_device == "plughw:CARD=U4K,DEV=0"
+    assert loop_config.speaker_device == "plughw:CARD=SPA3700,DEV=0"
+    assert loop_config.sample_rate == 16000
+    assert loop_config.channels == 1
+    assert loop_config.vad_rms_threshold == 0.13
+    assert loop_config.vad_min_voice_ms == 600
+    assert loop_config.vad_end_silence_ms == 900
+    assert loop_config.max_utterance_ms == 5000
+    assert loop_config.asr_model_dir == "/home/darrow/eibrain/models/asr/sherpa-onnx-streaming"
+    assert loop_config.asr_model_type == "lstm"
+    assert loop_config.tts_backend == "minimax"
+    assert loop_config.tts_command == "espeak-ng"
+    assert loop_config.tts_voice == "cmn"
+    assert loop_config.tts_rate_wpm == 150
+    assert loop_config.playback_echo_cooldown_ms == 1200
+    assert loop_config.minimax_api_key == "secret-minimax"
+    assert loop_config.minimax_api_base_url == "https://api.minimaxi.com"
+    assert loop_config.minimax_model == "speech-2.8-hd"
+    assert loop_config.minimax_voice_id == "female-shaonv"
+    assert loop_config.minimax_audio_format == "wav"
+    assert loop_config.minimax_sample_rate == 32000
+    assert loop_config.dialogue_backend == "eibrain_subprocess"
+    assert loop_config.dialogue_command == "/opt/eihead/current/.venv/bin/python"
+    assert loop_config.dialogue_module == "apps.cognitive_runtime"
+    assert loop_config.dialogue_cwd == "/home/darrow/dev-project/eibrain"
+    assert loop_config.dialogue_config_path == "/home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml"
+    assert loop_config.dialogue_pythonpath == "/home/darrow/dev-project/eibrain:/dev-project/eiprotocol"
+    assert loop_config.dialogue_timeout_s == 12
+    assert loop_config.dialogue_session_id == "honjia-voice"
+    assert loop_config.dialogue_actor_id == "darrow"
+    assert runtime is not None
+
+
+def test_native_voice_runtime_is_not_attached_without_sherpa_model_dir() -> None:
+    from eihead.runtime.config import parse_eihead_config
+
+    config = parse_eihead_config(
+        {
+            "node_id": "honjia",
+            "capabilities": {
+                "software": {
+                    "asr": {
+                        "enabled": True,
+                        "provider": "sherpa_onnx",
+                        "limits": {"streaming": True},
+                    }
+                }
+            },
+        }
+    )
+
+    assert build_native_voice_runtime(config) is None
+
+
+def test_from_config_path_attaches_native_voice_runtime_from_honjia_config(tmp_path: Path, monkeypatch: Any) -> None:
+    voice_runtime = FakeNativeVoiceRuntime()
+
+    def fake_build_native_voice_runtime(config: object) -> FakeNativeVoiceRuntime:
+        return voice_runtime
+
+    monkeypatch.setattr(
+        "eihead.runtime.app.build_native_voice_runtime",
+        fake_build_native_voice_runtime,
+    )
+    config_path = tmp_path / "eihead.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia",
+                "capabilities:",
+                "  software:",
+                "    asr:",
+                "      enabled: true",
+                "      provider: sherpa_onnx",
+                "      model_dir: /models/asr",
+                "      model_type: lstm",
+                "      limits:",
+                "        streaming: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = HeadRuntimeApp.from_config_path(str(config_path), native_environ={})
+
+    assert voice_runtime.started == 1
+    assert runtime.voice_status()["voice_dialogue"]["running"] is True
+    assert runtime.eivoice_runtime_status()["state"] == "running"

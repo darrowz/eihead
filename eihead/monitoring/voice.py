@@ -230,7 +230,8 @@ def _voice_payload_from_eivoice_runtime(status: Mapping[str, Any]) -> dict[str, 
     audio_frontend = _json_mapping(panel.get("audioFrontend")) or {}
     transport = _json_mapping(panel.get("transport")) or {}
     warnings = [str(item) for item in panel.get("warnings", []) if item]
-    asr = _json_mapping(runtime.get("asr") or runtime.get("asr_status") or runtime.get("recognition")) or {}
+    asr_raw = runtime.get("asr") or runtime.get("asr_status") or runtime.get("recognition")
+    asr = _json_mapping(asr_raw) if isinstance(asr_raw, Mapping) else {}
     mouth = _mouth_payload_from_eivoice_runtime(runtime)
     mouth_missing = mouth is None
     if mouth is None:
@@ -250,6 +251,12 @@ def _voice_payload_from_eivoice_runtime(status: Mapping[str, Any]) -> dict[str, 
     readiness_messages = warnings or ["eivoice runtime state is present"]
     if mouth_missing:
         readiness_messages.append("mouth playback diagnostics are missing")
+    runtime_running = bool(runtime.get("running")) or panel.get("state") in {"running", "conversation"}
+    transport_state = _first_text(transport.get("state"))
+    realtime_audio_running = (
+        transport_state == "connected"
+        or (runtime_running and transport_state in {"", "unknown"})
+    )
     return {
         "eivoice_runtime": {
             "state": panel.get("state"),
@@ -290,7 +297,7 @@ def _voice_payload_from_eivoice_runtime(status: Mapping[str, Any]) -> dict[str, 
         },
         "realtime_audio": {
             "enabled": True,
-            "running": transport.get("state") == "connected" and panel.get("state") in {"running", "conversation"},
+            "running": realtime_audio_running,
             "transport": transport,
         },
         "streaming": {

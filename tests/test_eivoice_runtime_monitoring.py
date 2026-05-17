@@ -345,6 +345,36 @@ class RuntimePanelApp:
         return {"capabilities": {}}
 
 
+class AttachedVoiceRuntimeApp(RuntimePanelApp):
+    def voice_status(self) -> dict[str, Any]:
+        return {
+            "status": "ready",
+            "ear": {
+                "status": "listening",
+                "provider": "sherpa_onnx",
+                "capture": {"status": "running", "details": {"device": "plughw:CARD=U4K,DEV=0"}},
+                "asr": {"enabled": True, "provider": "sherpa_onnx", "provider_state": "ready"},
+            },
+            "mouth": {
+                "status": "idle",
+                "backend": "espeak",
+                "tts_playback": {"status": "ready", "details": {"device": "plughw:CARD=SPA3700,DEV=0"}},
+            },
+            "voice_dialogue": {"enabled": True, "running": True, "phase": "listening"},
+            "realtime_audio": {"enabled": True, "running": True, "audio_level": 0.02},
+            "readiness_message": "native realtime voice loop is attached",
+        }
+
+    def eivoice_runtime_status(self) -> dict[str, Any]:
+        return {
+            "state": "running",
+            "conversation_state": "listening",
+            "health": "healthy",
+            "running": True,
+            "audio_frontend": {"vad": {"enabled": True, "state": "listening"}},
+        }
+
+
 @contextmanager
 def running_server(app: Any) -> Iterator[str]:
     server = create_server(app, host="127.0.0.1", port=0, clock=lambda: 123.0)
@@ -386,3 +416,16 @@ def test_web_exposes_eivoice_runtime_panel() -> None:
     assert payload["eivoiceRuntime"]["state"] == "running"
     assert payload["eivoiceRuntime"]["conversationState"] == "Conversation"
     assert payload["eivoiceRuntime"]["transport"]["name"] == "fake_websocket"
+
+
+def test_web_voice_realtime_reports_attached_native_runtime_as_live() -> None:
+    with running_server(AttachedVoiceRuntimeApp()) as base_url:
+        payload = read_json(f"{base_url}/api/voice/realtime")
+        runtime_payload = read_json(f"{base_url}/api/eivoice/runtime")
+
+    assert payload["status"] in {"ready", "ok", "wired"}
+    assert payload["not_wired"] is False
+    assert payload["realtime_audio"]["running"] is True
+    assert payload["dialogue"]["running"] is True
+    assert "native realtime voice loop is attached" in payload["readiness_message"]
+    assert runtime_payload["eivoiceRuntime"]["state"] == "running"

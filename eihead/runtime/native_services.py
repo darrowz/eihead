@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from eihead.devices.neck_servo import build_neck_servo_adapter
+from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
 from eihead.eye import GStreamerHailoRealtimeConfig, RealtimeEyeService
 
 
@@ -32,6 +34,116 @@ def build_native_provider_services(
     if eye_service is not None:
         services["eye"] = eye_service
     return services
+
+
+def build_native_voice_runtime(config: Any | None) -> NativeVoiceInteractionLoop | None:
+    if not _is_honjia_config(config) or not _voice_realtime_enabled(config):
+        return None
+    return NativeVoiceInteractionLoop(native_voice_loop_config_from_eihead_config(config))
+
+
+def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopConfig:
+    raw = _mapping(getattr(config, "raw", None))
+    devices = _mapping(raw.get("devices"))
+    microphone = _mapping(devices.get("microphone"))
+    speaker = _mapping(devices.get("speaker"))
+    asr = _software_capability(config, "asr")
+    tts = _software_capability(config, "tts")
+    dialogue = _software_capability(config, "dialogue")
+    asr_limits = _mapping(getattr(asr, "limits", None))
+    asr_extra = _mapping(getattr(asr, "extra", None))
+    tts_extra = _mapping(getattr(tts, "extra", None))
+    dialogue_extra = _mapping(getattr(dialogue, "extra", None))
+    microphone_limits = _mapping(microphone.get("limits"))
+    tts_provider = _text(getattr(tts, "provider", ""), "")
+    minimax_backend = tts_provider.lower() == "minimax"
+    dialogue_provider = _text(getattr(dialogue, "provider", ""), "template")
+
+    return NativeVoiceLoopConfig(
+        enabled=True,
+        microphone_device=_text(microphone.get("device") or microphone.get("path"), "default"),
+        speaker_device=_text(speaker.get("device") or speaker.get("path"), "default"),
+        sample_rate=_int(microphone.get("sample_rate") or microphone.get("sampleRate"), 16000),
+        channels=_int(microphone.get("channels"), 1),
+        frame_ms=_int(asr_extra.get("frame_ms") or asr_extra.get("frameMs") or microphone_limits.get("frame_ms"), 120),
+        vad_rms_threshold=_float(
+            asr_extra.get("vad_rms_threshold")
+            or asr_extra.get("vadRmsThreshold")
+            or microphone.get("vad_rms_threshold")
+            or microphone.get("vadRmsThreshold"),
+            0.075,
+        ),
+        vad_min_voice_ms=_int(asr_extra.get("vad_min_voice_ms") or asr_extra.get("vadMinVoiceMs"), 240),
+        vad_end_silence_ms=_int(
+            asr_extra.get("vad_end_silence_ms") or asr_extra.get("vadEndSilenceMs"),
+            600,
+        ),
+        max_utterance_ms=_int(
+            asr_extra.get("max_utterance_ms")
+            or asr_extra.get("maxUtteranceMs")
+            or asr_limits.get("max_utterance_ms"),
+            4200,
+        ),
+        asr_model_dir=_text(getattr(asr, "model_dir", ""), ""),
+        asr_model_type=_text(asr_extra.get("model_type") or asr_extra.get("modelType"), "lstm"),
+        tts_backend="minimax" if minimax_backend else "espeak-ng",
+        tts_command=_text(tts_extra.get("command") or tts_extra.get("tts_command") or tts_extra.get("ttsCommand"), "espeak-ng"),
+        tts_voice=_text(tts_extra.get("fallback_voice") or tts_extra.get("voice") or tts_extra.get("tts_voice") or tts_extra.get("ttsVoice"), "cmn"),
+        tts_rate_wpm=_int(tts_extra.get("rate_wpm") or tts_extra.get("rateWpm"), 150),
+        playback_backend="aplay",
+        playback_echo_cooldown_ms=_int(
+            tts_extra.get("playback_echo_cooldown_ms")
+            or tts_extra.get("playbackEchoCooldownMs")
+            or asr_extra.get("playback_echo_cooldown_ms")
+            or asr_extra.get("playbackEchoCooldownMs"),
+            350,
+        ),
+        minimax_api_key=_text(
+            tts_extra.get("api_key")
+            or tts_extra.get("apiKey")
+            or os.environ.get("EIVOICE_MINIMAX_API_KEY")
+            or os.environ.get("MINIMAX_API_KEY"),
+            "",
+        ),
+        minimax_api_base_url=_text(
+            tts_extra.get("api_base_url")
+            or tts_extra.get("apiBaseUrl")
+            or os.environ.get("EIVOICE_MINIMAX_API_BASE_URL")
+            or os.environ.get("MINIMAX_API_HOST")
+            or os.environ.get("MINIMAX_API_BASE_URL"),
+            "https://api.minimaxi.com",
+        ),
+        minimax_model=_text(getattr(tts, "model", "") or os.environ.get("EIVOICE_MINIMAX_MODEL") or os.environ.get("MINIMAX_MODEL"), "speech-2.8-hd"),
+        minimax_voice_id=_text(
+            tts_extra.get("voice_id")
+            or tts_extra.get("voiceId")
+            or tts_extra.get("minimax_voice_id")
+            or tts_extra.get("minimaxVoiceId")
+            or os.environ.get("EIVOICE_MINIMAX_VOICE_ID")
+            or os.environ.get("MINIMAX_VOICE_ID"),
+            "female-shaonv",
+        ),
+        minimax_audio_format=_text(tts_extra.get("audio_format") or tts_extra.get("audioFormat"), "wav"),
+        minimax_sample_rate=_int(tts_extra.get("sample_rate") or tts_extra.get("sampleRate"), 32000),
+        minimax_bitrate=_int(tts_extra.get("bitrate"), 128000),
+        minimax_channel=_int(tts_extra.get("channel") or tts_extra.get("channels"), 1),
+        minimax_speed=_float(tts_extra.get("speed"), 1.0),
+        minimax_volume=_float(tts_extra.get("volume") or tts_extra.get("vol"), 1.0),
+        minimax_pitch=_float(tts_extra.get("pitch"), 0.0),
+        minimax_language_boost=_text(tts_extra.get("language_boost") or tts_extra.get("languageBoost"), "auto"),
+        minimax_timeout_s=_float(tts_extra.get("timeout_s") or tts_extra.get("timeoutS"), 30.0),
+        dialogue_backend=dialogue_provider,
+        dialogue_command=_text(dialogue_extra.get("command"), ""),
+        dialogue_module=_text(dialogue_extra.get("module"), "apps.cognitive_runtime"),
+        dialogue_cwd=_text(dialogue_extra.get("cwd") or dialogue_extra.get("working_dir") or dialogue_extra.get("workingDir"), ""),
+        dialogue_config_path=_text(dialogue_extra.get("config_path") or dialogue_extra.get("configPath"), ""),
+        dialogue_pythonpath=_text(dialogue_extra.get("pythonpath") or dialogue_extra.get("python_path") or dialogue_extra.get("pythonPath"), ""),
+        dialogue_timeout_s=_float(dialogue_extra.get("timeout_s") or dialogue_extra.get("timeoutS"), 12.0),
+        dialogue_session_id=_text(dialogue_extra.get("session_id") or dialogue_extra.get("sessionId"), "honjia-voice"),
+        dialogue_actor_id=_text(dialogue_extra.get("actor_id") or dialogue_extra.get("actorId"), "darrow"),
+        dialogue_head_instance_id=_text(dialogue_extra.get("head_instance_id") or dialogue_extra.get("headInstanceId"), "honjia"),
+        dialogue_brain_instance_id=_text(dialogue_extra.get("brain_instance_id") or dialogue_extra.get("brainInstanceId"), "honxin"),
+    )
 
 
 def build_realtime_eye_service(
@@ -411,6 +523,19 @@ def _vision_realtime_enabled(config: Any | None) -> bool:
     return _bool(limits.get("realtime"), True)
 
 
+def _voice_realtime_enabled(config: Any | None) -> bool:
+    asr = _software_capability(config, "asr")
+    if asr is None or not _enabled(asr):
+        return False
+    if not _text(getattr(asr, "model_dir", ""), ""):
+        return False
+    provider = _text(getattr(asr, "provider", ""), "")
+    if provider and provider != "sherpa_onnx":
+        return False
+    limits = _mapping(getattr(asr, "limits", None))
+    return _bool(limits.get("streaming"), True)
+
+
 def _camera_state_path(config: Any | None) -> str:
     raw = _mapping(getattr(config, "raw", None))
     devices = _mapping(raw.get("devices"))
@@ -547,7 +672,9 @@ __all__ = [
     "StateFileEyeAdapter",
     "build_native_neck_servo_adapter",
     "build_native_provider_services",
+    "build_native_voice_runtime",
     "build_native_voice_status",
     "build_realtime_eye_service",
     "gstreamer_hailo_config_from_eihead_config",
+    "native_voice_loop_config_from_eihead_config",
 ]

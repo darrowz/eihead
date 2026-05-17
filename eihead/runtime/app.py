@@ -24,6 +24,7 @@ from .native_services import (
     EyeAdapterFactory,
     build_native_neck_servo_adapter,
     build_native_provider_services,
+    build_native_voice_runtime,
     build_native_voice_status,
 )
 
@@ -72,6 +73,7 @@ class HeadRuntimeApp:
     neck_pan_state: PanNeckState = field(default_factory=PanNeckState, repr=False)
     native_providers: Mapping[str, Any] | None = field(default=None, repr=False)
     native_voice_status: Mapping[str, Any] | None = field(default=None, repr=False)
+    voice_runtime: Any | None = field(default=None, repr=False)
     _ptz_last_target_angle: int | None = field(default=None, init=False, repr=False)
     _last_neck_plan: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _last_neck_servo: dict[str, Any] | None = field(default=None, init=False, repr=False)
@@ -94,6 +96,7 @@ class HeadRuntimeApp:
             normalizable_providers,
             neck_servo_adapter=self.neck_servo_adapter,
         )
+        self._start_native_voice_runtime()
 
     @classmethod
     def from_config_path(
@@ -132,6 +135,7 @@ class HeadRuntimeApp:
             neck_servo_adapter=neck_servo_adapter,
             native_providers=native_providers,
             native_voice_status=build_native_voice_status(native_config),
+            voice_runtime=build_native_voice_runtime(native_config),
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -221,6 +225,10 @@ class HeadRuntimeApp:
     def voice_status(self) -> Mapping[str, Any] | Any | None:
         """Return native voice diagnostics when available, else a body snapshot fallback."""
 
+        live_voice_runtime = self._voice_runtime_payload("voice_status")
+        if live_voice_runtime is not None:
+            return live_voice_runtime
+
         if isinstance(self.native_voice_status, Mapping):
             return dict(self.native_voice_status)
 
@@ -255,6 +263,10 @@ class HeadRuntimeApp:
 
     def voice_realtime(self) -> Mapping[str, Any] | Any | None:
         return self.voice_status()
+
+    def eivoice_runtime_status(self) -> Mapping[str, Any]:
+        payload = self._voice_runtime_payload("status")
+        return dict(payload) if isinstance(payload, Mapping) else {}
 
     def neck_status(self) -> Mapping[str, Any]:
         """Return native pan/servo diagnostics for the monitor."""
@@ -805,6 +817,14 @@ class HeadRuntimeApp:
     ) -> dict[str, Any]:
         dispatch_actions = getattr(self.body_runtime, "dispatch_actions", None)
         if not callable(dispatch_actions):
+            native_voice_outcome = self._handle_native_voice_action(
+                action_id=action_id,
+                action_type=action_type,
+                trace_id=trace_id,
+                text=_string_or_default(getattr(protocol_action, "text", ""), ""),
+            )
+            if native_voice_outcome is not None:
+                return native_voice_outcome
             return self._action_outcome(
                 action_id=action_id,
                 action_type=action_type,
@@ -847,6 +867,84 @@ class HeadRuntimeApp:
                 "delegate_outcomes": serialized,
             },
         )
+
+    def _start_native_voice_runtime(self) -> None:
+        start = getattr(self.voice_runtime, "start", None)
+        if callable(start):
+            start()
+
+    def _voice_runtime_payload(self, method_name: str) -> Mapping[str, Any] | Any | None:
+        source = getattr(self.voice_runtime, method_name, None)
+        if callable(source):
+            return source()
+        if method_name == "status" and isinstance(self.voice_runtime, Mapping):
+            return dict(self.voice_runtime)
+        return None
+
+    def _handle_native_voice_action(
+        self,
+        *,
+        action_id: str,
+        action_type: str,
+        trace_id: str | None,
+        text: str = "",
+    ) -> dict[str, Any] | None:
+        if self.voice_runtime is None:
+            return None
+        if action_type == "speak":
+            speak = getattr(self.voice_runtime, "speak", None)
+            if not callable(speak):
+                return None
+            try:
+                speech = speak(text)
+            except Exception as exc:  # pragma: no cover - exercised by integration when hardware fails.
+                return self._action_outcome(
+                    action_id=action_id,
+                    action_type=action_type,
+                    trace_id=trace_id,
+                    status="error",
+                    success=False,
+                    details={"reason": "native_voice_runtime_error", "error": str(exc)},
+                )
+            details = _serialize_outcome(speech)
+            status = _string_or_default(details.get("status"), "accepted")
+            return self._action_outcome(
+                action_id=action_id,
+                action_type=action_type,
+                trace_id=trace_id,
+                status="accepted" if status == "ok" else status,
+                success=bool(details.get("success")),
+                delegated=True,
+                details={"provider": "native_voice_runtime", **details},
+            )
+        if action_type == "stop_speech":
+            stop_speech = getattr(self.voice_runtime, "stop_speech", None)
+            if not callable(stop_speech):
+                stop_speech = getattr(self.voice_runtime, "stop", None)
+            if not callable(stop_speech):
+                return None
+            try:
+                stopped = stop_speech()
+            except Exception as exc:  # pragma: no cover - exercised by integration when hardware fails.
+                return self._action_outcome(
+                    action_id=action_id,
+                    action_type=action_type,
+                    trace_id=trace_id,
+                    status="error",
+                    success=False,
+                    details={"reason": "native_voice_runtime_error", "error": str(exc)},
+                )
+            details = _serialize_outcome(stopped) if stopped is not None else {"status": "stopped", "success": True}
+            return self._action_outcome(
+                action_id=action_id,
+                action_type=action_type,
+                trace_id=trace_id,
+                status=_string_or_default(details.get("status"), "stopped"),
+                success=bool(details.get("success", True)),
+                delegated=True,
+                details={"provider": "native_voice_runtime", **details},
+            )
+        return None
 
     def _capture_frame_outcome(self, *, action_id: str, trace_id: str | None) -> dict[str, Any]:
         capture_frame = getattr(self.body_runtime, "capture_frame", None)

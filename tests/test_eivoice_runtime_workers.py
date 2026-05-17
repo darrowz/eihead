@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import replace
+import subprocess
 
 from eihead.eivoice_runtime import AudioFrame, EiVoiceRuntimeRunner, FakeWebSocketTransport
 
@@ -84,6 +85,208 @@ class FakePlaybackSink:
 
     def stop(self) -> None:
         self.stop_calls += 1
+
+
+class StoppableCaptureSource:
+    def __init__(self) -> None:
+        self.stop_calls = 0
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+    def status(self) -> dict[str, object]:
+        return {"running": False}
+
+
+class StubTranscriber:
+    def status(self) -> dict[str, object]:
+        return {"state": "not_loaded"}
+
+
+class FakeMiniMaxSynthesizer:
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def synthesize(self, text: str) -> dict[str, object]:
+        self.texts.append(text)
+        return {
+            "status": "ok",
+            "audio_bytes": b"RIFFfake-wav",
+            "details": {
+                "backend": "minimax",
+                "model": "speech-2.8-hd",
+                "voice_id": "female-shaonv",
+                "audio_size": 12,
+            },
+        }
+
+
+class FakeDialogueClient:
+    def __init__(self, reply: str = "我是 eibrain。") -> None:
+        self.reply = reply
+        self.requests: list[dict[str, object]] = []
+
+    def reply_to_transcript(self, text: str, **kwargs: object) -> dict[str, object]:
+        self.requests.append({"text": text, **kwargs})
+        return {
+            "status": "ok",
+            "reply_text": self.reply,
+            "details": {"provider": "fake_eibrain", "round_id": kwargs.get("round_id", "")},
+        }
+
+
+class OneShotTranscriber:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls = 0
+
+    def transcribe(self, frames: list[AudioFrame]) -> str:
+        self.calls += 1
+        return self.text
+
+    def status(self) -> dict[str, object]:
+        return {"state": "ready"}
+
+
+def test_native_voice_turn_uses_dialogue_client_reply_before_tts() -> None:
+    from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
+
+    capture_source = StoppableCaptureSource()
+    dialogue = FakeDialogueClient(reply="我是 eibrain。")
+    spoken: list[str] = []
+
+    loop = NativeVoiceInteractionLoop(
+        NativeVoiceLoopConfig(playback_echo_cooldown_ms=0),
+        capture_source=capture_source,  # type: ignore[arg-type]
+        transcriber=OneShotTranscriber("你好鸿佳"),  # type: ignore[arg-type]
+        dialogue_client=dialogue,
+        tts_synthesizer=None,
+    )
+    loop._play_text = lambda text: spoken.append(text) or {  # type: ignore[method-assign]
+        "status": "ok",
+        "success": True,
+        "details": {"playback_elapsed_ms": 7},
+    }
+    loop._frames.append(_pcm_frame(1, payload=b"\x01\x02"))
+
+    loop._finalize_utterance()
+
+    assert dialogue.requests[0]["text"] == "你好鸿佳"
+    assert spoken == ["我是 eibrain。"]
+    status = loop.voice_status()
+    assert status["voice_dialogue"]["last_transcript"] == "你好鸿佳"
+    assert status["voice_dialogue"]["last_reply"] == "我是 eibrain。"
+    assert status["voice_dialogue"]["last_stage_latency_ms"]["dialogue"] >= 0
+    assert status["last_turn"] == {"transcript": "你好鸿佳", "reply": "我是 eibrain。", "status": "turn_complete"}
+
+
+def test_eibrain_subprocess_dialogue_client_parses_play_speech_action() -> None:
+    from eihead.eivoice_runtime.native_loop import EIBrainSubprocessDialogueClient, NativeVoiceLoopConfig
+
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            '[{"kind":"play_speech_action","text":"我是 eibrain。"}]',
+            "",
+        )
+
+    client = EIBrainSubprocessDialogueClient(
+        NativeVoiceLoopConfig(
+            dialogue_backend="eibrain_subprocess",
+            dialogue_command="/opt/eihead/current/.venv/bin/python",
+            dialogue_module="apps.cognitive_runtime",
+            dialogue_cwd="/dev-project/eibrain",
+            dialogue_config_path="/dev-project/eibrain/config/eibrain.honjia.yaml",
+            dialogue_pythonpath="/dev-project/eibrain:/dev-project/eiprotocol",
+            dialogue_timeout_s=12,
+            dialogue_session_id="honjia-voice",
+            dialogue_actor_id="darrow",
+        ),
+        runner=runner,
+    )
+
+    result = client.reply_to_transcript("介绍一下你自己", round_id="voice-1", asr_latency_ms=12.5)
+
+    assert result["status"] == "ok"
+    assert result["reply_text"] == "我是 eibrain。"
+    assert commands[0][:3] == ["/opt/eihead/current/.venv/bin/python", "-m", "apps.cognitive_runtime"]
+    assert "--text" in commands[0]
+    assert "介绍一下你自己" in commands[0]
+    assert result["details"]["event_name"] == "ei.voice.asr.final"
+
+
+def test_native_voice_speak_prefers_minimax_tts_when_configured() -> None:
+    from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
+
+    commands: list[list[str]] = []
+    capture_source = StoppableCaptureSource()
+    synthesizer = FakeMiniMaxSynthesizer()
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    loop = NativeVoiceInteractionLoop(
+        NativeVoiceLoopConfig(
+            speaker_device="plughw:CARD=SPA3700,DEV=0",
+            tts_backend="minimax",
+            minimax_api_key="secret-tts",
+            minimax_model="speech-2.8-hd",
+            minimax_voice_id="female-shaonv",
+            playback_echo_cooldown_ms=0,
+        ),
+        capture_source=capture_source,  # type: ignore[arg-type]
+        transcriber=StubTranscriber(),  # type: ignore[arg-type]
+        runner=runner,
+        tts_synthesizer=synthesizer,
+    )
+
+    outcome = loop.speak("我听到了：你好鸿佳")
+
+    assert outcome["status"] == "ok"
+    assert capture_source.stop_calls == 1
+    assert synthesizer.texts == ["我听到了：你好鸿佳"]
+    assert commands[0][:4] == ["aplay", "-q", "-D", "plughw:CARD=SPA3700,DEV=0"]
+    assert outcome["details"]["backend"] == "minimax"
+    assert outcome["details"]["model"] == "speech-2.8-hd"
+    assert outcome["details"]["voice_id"] == "female-shaonv"
+
+
+def test_native_voice_speak_uses_chinese_espeak_voice_and_stops_capture() -> None:
+    from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
+
+    commands: list[list[str]] = []
+    capture_source = StoppableCaptureSource()
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    loop = NativeVoiceInteractionLoop(
+        NativeVoiceLoopConfig(
+            speaker_device="plughw:CARD=SPA3700,DEV=0",
+            tts_command="espeak-ng",
+            tts_voice="cmn",
+            tts_rate_wpm=150,
+            playback_echo_cooldown_ms=0,
+        ),
+        capture_source=capture_source,  # type: ignore[arg-type]
+        transcriber=StubTranscriber(),  # type: ignore[arg-type]
+        runner=runner,
+    )
+
+    outcome = loop.speak("我听到了：你好鸿佳")
+
+    assert outcome["status"] == "ok"
+    assert capture_source.stop_calls == 1
+    assert commands[0][:5] == ["espeak-ng", "-v", "cmn", "-s", "150"]
+    assert commands[1][:4] == ["aplay", "-q", "-D", "plughw:CARD=SPA3700,DEV=0"]
+    assert outcome["details"]["command"] == "espeak-ng"
+    assert outcome["details"]["voice"] == "cmn"
 
 
 def test_runner_step_methods_move_audio_through_worker_queues() -> None:

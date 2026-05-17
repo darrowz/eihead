@@ -60,6 +60,11 @@ capabilities:
       provider: sherpa_onnx
       model: sherpa-onnx-streaming
       model_dir: /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+      model_type: lstm
+      vad_rms_threshold: 0.18
+      vad_min_voice_ms: 720
+      vad_end_silence_ms: 1000
+      max_utterance_ms: 5000
       limits:
         streaming: true
         languages: [zh]
@@ -67,9 +72,33 @@ capabilities:
       enabled: true
       provider: minimax
       model: speech-2.8-hd
+      api_base_url: https://api.minimaxi.com
+      voice_id: female-shaonv
+      audio_format: wav
+      sample_rate: 32000
+      command: espeak-ng
+      voice: cmn
+      rate_wpm: 150
+      playback_echo_cooldown_ms: 1200
       limits:
         streaming: false
         languages: [zh]
+    dialogue:
+      enabled: true
+      provider: eibrain_subprocess
+      command: /opt/eihead/current/.venv/bin/python
+      module: apps.cognitive_runtime
+      cwd: /home/darrow/dev-project/eibrain
+      config_path: /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml
+      pythonpath: /home/darrow/dev-project/eibrain:/dev-project/eiprotocol
+      timeout_s: 12
+      session_id: honjia-voice
+      actor_id: darrow
+      head_instance_id: honjia
+      brain_instance_id: honxin
+      limits:
+        protocol: eiprotocol
+        transport: subprocess
     vision_backend:
       enabled: true
       backend: hailo

@@ -64,6 +64,45 @@ class _SnapshotOnlyRuntime:
         return {"node_id": "honjia-snapshot-only"}
 
 
+class _NativeVoiceRuntime:
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+        self.spoken: list[str] = []
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self) -> dict[str, object]:
+        self.stopped += 1
+        return {"status": "stopped", "success": True}
+
+    def speak(self, text: str) -> dict[str, object]:
+        self.spoken.append(text)
+        return {
+            "status": "ok",
+            "success": True,
+            "details": {"text_preview": text[:20], "playback_elapsed_ms": 12.5},
+        }
+
+    def status(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.eivoice_runtime.diagnostics.v1",
+            "state": "running",
+            "health": "healthy",
+            "running": True,
+            "audio_frontend": {"vad": {"enabled": True}},
+        }
+
+    def voice_status(self) -> dict[str, object]:
+        return {
+            "status": "ready",
+            "voice_dialogue": {"enabled": True, "running": True, "phase": "listening"},
+            "realtime_audio": {"enabled": True, "running": True},
+            "readiness_message": "native realtime voice loop is attached",
+        }
+
+
 def test_capabilities_returns_status_snapshot_shape_without_hardware() -> None:
     runtime = HeadRuntimeApp(body_runtime=_BodyRuntime(), config_path="config/test.yaml")
 
@@ -235,3 +274,41 @@ def test_handle_action_without_dispatcher_returns_structured_skipped_outcome() -
     assert outcome["status"] == "not_wired"
     assert outcome["success"] is False
     assert outcome["details"]["reason"] == "native_provider_unavailable"
+
+
+def test_head_runtime_starts_and_prefers_native_voice_runtime_status() -> None:
+    voice_runtime = _NativeVoiceRuntime()
+    runtime = HeadRuntimeApp(
+        body_runtime=_SnapshotOnlyRuntime(),
+        native_voice_status={"status": "degraded", "voice_dialogue": {"running": False}},
+        voice_runtime=voice_runtime,
+    )
+
+    assert voice_runtime.started == 1
+    assert runtime.voice_status()["voice_dialogue"]["running"] is True
+    assert runtime.eivoice_runtime_status()["state"] == "running"
+
+
+def test_handle_action_speak_uses_native_voice_runtime_without_body_dispatcher() -> None:
+    voice_runtime = _NativeVoiceRuntime()
+    runtime = HeadRuntimeApp(body_runtime=_SnapshotOnlyRuntime(), voice_runtime=voice_runtime)
+
+    outcome = runtime.handle_action({"type": "speak", "text": "hello honjia"}, trace_id="trace-native-voice")
+
+    assert outcome["status"] == "accepted"
+    assert outcome["success"] is True
+    assert outcome["delegated"] is True
+    assert outcome["trace_id"] == "trace-native-voice"
+    assert outcome["details"]["provider"] == "native_voice_runtime"
+    assert voice_runtime.spoken == ["hello honjia"]
+
+
+def test_handle_action_stop_speech_uses_native_voice_runtime_without_body_dispatcher() -> None:
+    voice_runtime = _NativeVoiceRuntime()
+    runtime = HeadRuntimeApp(body_runtime=_SnapshotOnlyRuntime(), voice_runtime=voice_runtime)
+
+    outcome = runtime.handle_action({"type": "stop_speech"})
+
+    assert outcome["status"] == "stopped"
+    assert outcome["success"] is True
+    assert voice_runtime.stopped == 1
