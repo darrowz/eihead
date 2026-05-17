@@ -655,6 +655,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     neck_suppression_reason = _display_value(neck.get("suppression_reason") or "unknown")
     neck_servo = _display_value(_neck_servo_summary(neck.get("servo")))
     neck_axis_support = _display_value(_neck_axis_support_summary(neck.get("axis_support")))
+    neck_motion_evidence = _display_value(_neck_motion_evidence_summary(neck.get("motion_evidence")))
     neck_readiness = _display_value(neck.get("readiness_message") or "unknown")
 
     status_json = _json_for_html(status)
@@ -746,7 +747,8 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Status</div><span class="metric">{neck_state}</span></div>
       <div class="card"><div class="label">Current angle</div><span class="metric">{neck_current_angle}</span></div>
       <div class="card"><div class="label">Target angle</div><span class="metric">{neck_target_angle}</span></div>
-      <div class="card"><div class="label">Will move</div><span class="metric">{neck_will_move}</span></div>
+      <div class="card"><div class="label">Current action will move</div><span class="metric">{neck_will_move}</span></div>
+      <div class="card"><div class="label">Motion evidence</div><span class="metric">{neck_motion_evidence}</span></div>
       <div class="card"><div class="label">Suppressed</div><span class="metric">{neck_suppressed}</span></div>
       <div class="card"><div class="label">Suppression reason</div><span class="metric">{neck_suppression_reason}</span></div>
       <div class="card"><div class="label">Servo</div><span class="metric">{neck_servo}</span></div>
@@ -1086,6 +1088,20 @@ def _render_lightweight_index(timestamp: float) -> str:
       if (!freshness.state && freshness.age_s === undefined) return '未知';
       return `${{text(freshness.state)}} · age=${{metric(freshness.age_s, 's')}}`;
     }}
+    function neckMotionEvidence(neck) {{
+      const evidence = neck.motion_evidence || {{}};
+      if (evidence.verified === true) {{
+        const servo = evidence.servo_id ? `S${{evidence.servo_id}}` : 'S?';
+        const axis = evidence.axis === 'pan' ? '水平' : text(evidence.axis);
+        return `已确认：${{servo}} ${{axis}}舵机现场观察到转动`;
+      }}
+      if (evidence.verified === false) return '未确认：没有运动证据';
+      return '未知：没有运动证据';
+    }}
+    function currentActionWillMove(neck) {{
+      if (neck.will_move === null || neck.will_move === undefined) return '无当前动作';
+      return neck.will_move;
+    }}
     function voiceReadiness(voice) {{
       const chain = voice.voice_chain_readiness || {{}};
       return first(voice.readiness_message, chain.readinessMessage, chain.summary, '未知');
@@ -1157,7 +1173,8 @@ def _render_lightweight_index(timestamp: float) -> str:
         ['状态', neck.status],
         ['当前角度', metric(neck.current_angle, 'deg')],
         ['目标角度', metric(neck.target_angle, 'deg')],
-        ['是否会动', neck.will_move],
+        ['运动验证', neckMotionEvidence(neck)],
+        ['本次指令会动', currentActionWillMove(neck)],
         ['是否抑制', neck.suppressed],
         ['抑制原因', neck.suppression_reason],
         ['Servo', `${{text((neck.servo || {{}}).status)}} / ${{text((neck.servo || {{}}).reason)}}`],
@@ -1353,6 +1370,20 @@ def _neck_servo_summary(value: Any) -> str:
     if reason and reason != "unknown":
         parts.append(str(reason))
     return " / ".join(parts)
+
+
+def _neck_motion_evidence_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    verified = value.get("verified")
+    if verified is True:
+        servo_id = value.get("servo_id")
+        axis = "pan" if value.get("axis") in {None, "", "pan"} else str(value.get("axis"))
+        servo = f"S{servo_id}" if servo_id is not None else "servo"
+        return f"verified / {servo} / {axis}"
+    if verified is False:
+        return "unverified"
+    return "unknown"
 
 
 def _neck_axis_support_summary(value: Any) -> str:

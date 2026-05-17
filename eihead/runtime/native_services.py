@@ -326,6 +326,8 @@ def build_native_neck_servo_adapter(config: Any | None) -> Any | None:
         enabled=_bool(neck.get("enabled"), True),
         mock=_bool(neck.get("mock"), False),
         hardware_verified=_bool(neck.get("hardware_verified") or neck.get("hardwareVerified"), False),
+        motion_verified=_bool(neck.get("motion_verified") or neck.get("motionVerified"), False),
+        motion_evidence=_text(neck.get("motion_evidence") or neck.get("motionEvidence"), ""),
     )
 
 

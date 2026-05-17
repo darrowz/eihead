@@ -180,7 +180,13 @@ def test_build_neck_servo_adapter_is_safely_unavailable_off_honjia() -> None:
 
 
 def test_honjia_pan_servo_status_can_report_physical_verification() -> None:
-    driver = RaspbotServoDriver(mock=True, servo_id=1, hardware_verified=True)
+    driver = RaspbotServoDriver(
+        mock=True,
+        servo_id=1,
+        hardware_verified=True,
+        motion_verified=True,
+        motion_evidence="operator_observed_s1_pan_servo",
+    )
     adapter = NeckServoCommandAdapter(driver, servo_id=1)
 
     status = adapter.status()
@@ -188,7 +194,10 @@ def test_honjia_pan_servo_status_can_report_physical_verification() -> None:
     assert status["status"] == "ready"
     assert status["servo_id"] == 1
     assert status["hardware_verified"] is True
+    assert status["motion_verified"] is True
+    assert status["motion_evidence"] == "operator_observed_s1_pan_servo"
     assert status["driver"]["hardware_verified"] is True
+    assert status["driver"]["motion_verified"] is True
 
 
 def test_runtime_routes_move_head_through_native_pan_servo_boundary_and_reports_suppression() -> None:

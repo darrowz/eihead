@@ -59,6 +59,27 @@ class SnapshotNeckApp(BaseMonitorApp):
         }
 
 
+class VerifiedMotionNeckApp(BaseMonitorApp):
+    def neck_realtime(self) -> dict[str, Any]:
+        return {
+            "status": "wired",
+            "pan": {"current_angle": 90, "target_angle": 90, "suppressed": False},
+            "servo": {
+                "status": "ready",
+                "available": True,
+                "reason": "neck_servo_adapter_ready",
+                "servo_id": 1,
+                "hardware_verified": True,
+                "motion_verified": True,
+                "motion_evidence": "operator_observed_s1_pan_servo",
+            },
+            "axis_support": {
+                "pan": {"supported": True, "status": "supported"},
+                "tilt": {"supported": False, "status": "unsupported", "reason": "tilt_not_supported"},
+            },
+        }
+
+
 class RecentActionNeckApp(BaseMonitorApp):
     def recent_actions(self) -> list[dict[str, Any]]:
         return [
@@ -218,6 +239,25 @@ def test_neck_api_uses_snapshot_without_promoting_unavailable_servo_to_ok() -> N
     assert payload.get("ok") is not True
 
 
+def test_neck_api_reports_motion_evidence_separately_from_current_action() -> None:
+    with running_server(VerifiedMotionNeckApp(), clock=lambda: 1002.5) as (base_url, _server, _thread):
+        status_code, payload = read_json_or_error(f"{base_url}/api/neck/status")
+
+    assert status_code == 200
+    assert payload["status"] == "wired"
+    assert payload["will_move"] is None
+    assert payload["motion_verified"] is True
+    assert payload["motion_evidence"] == {
+        "verified": True,
+        "status": "verified",
+        "source": "operator_observed",
+        "axis": "pan",
+        "servo_id": 1,
+        "evidence": "operator_observed_s1_pan_servo",
+        "summary": "S1 horizontal pan servo was observed moving",
+    }
+
+
 def test_neck_api_reports_tilt_unsupported_from_direct_neck_plan() -> None:
     with running_server(DirectTiltPlanApp(), clock=lambda: 1003.0) as (base_url, _server, _thread):
         status_code, payload = read_json_or_error(f"{base_url}/api/neck/status")
@@ -296,6 +336,8 @@ def test_neck_html_renders_angles_suppression_servo_and_axis_support() -> None:
     assert "Target angle" in body
     assert "Suppressed" in body
     assert "Suppression reason" in body
+    assert "Current action will move" in body
+    assert "Motion evidence" in body
     assert "Servo" in body
     assert "Axis support" in body
     assert "88" in body
@@ -336,6 +378,8 @@ def test_monitor_lightweight_root_renders_human_diagnostics_instead_of_raw_json(
     assert status_code == 200
     assert "阻塞点" in body
     assert "证据" in body
+    assert "运动验证" in body
+    assert "本次指令会动" in body
     assert "下一步" in body
     assert "具体数据" in body
     assert "Latest JSON" not in body

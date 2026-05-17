@@ -48,6 +48,8 @@ devices:
     i2c_addr: "0x2B"
     servo_id: 1
     hardware_verified: true
+    motion_verified: true
+    motion_evidence: operator_observed_s1_pan_servo
     pan_deg: [0, 180]
     tilt_deg: null
 

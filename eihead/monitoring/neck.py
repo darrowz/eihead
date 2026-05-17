@@ -371,6 +371,7 @@ def _base_payload(
     pan_support = _coerce_mapping(axis_support.get("pan")) or {}
     tilt_support = _coerce_mapping(axis_support.get("tilt")) or {}
     wired = _wired_for_status(status, not_wired=not_wired)
+    motion_evidence = _motion_evidence_from_servo(servo)
     payload: JsonObject = {
         "schema": NECK_MONITOR_SCHEMA,
         "runtime": "eihead",
@@ -387,6 +388,8 @@ def _base_payload(
         "suppression_reason": suppression_reason,
         "servo_status": servo["status"],
         "servo": servo,
+        "motion_verified": motion_evidence["verified"],
+        "motion_evidence": motion_evidence,
         "axis_support": axis_support,
         "pan": {
             "supported": pan_support.get("supported"),
@@ -464,6 +467,38 @@ def _readiness_message(status: str, servo: Mapping[str, Any], *, not_wired: bool
     if status == "degraded":
         return "native neck state is present but servo is not available"
     return f"neck status is {status}"
+
+
+def _motion_evidence_from_servo(servo: Mapping[str, Any]) -> JsonObject:
+    driver = _coerce_mapping(servo.get("driver"))
+    verified = _optional_bool(servo.get("motion_verified"))
+    if verified is None and driver is not None:
+        verified = _optional_bool(driver.get("motion_verified"))
+    if verified is None:
+        verified = _optional_bool(servo.get("hardware_verified"))
+    if verified is None and driver is not None:
+        verified = _optional_bool(driver.get("hardware_verified"))
+
+    evidence = _string_or_default(servo.get("motion_evidence"), "")
+    if not evidence and driver is not None:
+        evidence = _string_or_default(driver.get("motion_evidence"), "")
+    servo_id = _first_present(servo, driver or {}, keys=("servo_id", "servoId"))
+    axis = "pan" if verified is True else "unknown"
+    source = "operator_observed" if evidence.startswith("operator_observed") else ("status" if evidence else "unknown")
+    summary = (
+        "S1 horizontal pan servo was observed moving"
+        if evidence == "operator_observed_s1_pan_servo"
+        else evidence
+    )
+    return {
+        "verified": verified,
+        "status": "verified" if verified is True else ("unverified" if verified is False else "unknown"),
+        "source": source,
+        "axis": axis,
+        "servo_id": _json_number(servo_id),
+        "evidence": evidence or None,
+        "summary": summary or ("no motion evidence reported" if verified is not True else "motion verified"),
+    }
 
 
 def _axis_support_from_payload(payload: Mapping[str, Any], *, native_data: bool) -> JsonObject:

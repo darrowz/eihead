@@ -29,12 +29,15 @@ class NeckServoCommandAdapter:
         driver_available = driver_status.get("available")
         driver_status_text = str(driver_status.get("status", "") or "").strip().lower()
         available = driver_available is not False and driver_status_text not in {"unavailable", "error", "missing"}
+        motion_verified = _optional_bool(driver_status.get("motion_verified"))
         return {
             "status": "ready" if available else "unavailable",
             "available": available,
             "reason": "neck_servo_adapter_ready" if available else str(driver_status.get("reason") or "driver_unavailable"),
             "servo_id": self.servo_id,
             "hardware_verified": _optional_bool(driver_status.get("hardware_verified")) is True,
+            "motion_verified": motion_verified is True,
+            "motion_evidence": str(driver_status.get("motion_evidence") or ""),
             "driver": driver_status,
         }
 
@@ -139,6 +142,8 @@ class RaspbotServoDriver:
         enabled: bool = True,
         mock: bool = False,
         hardware_verified: bool = False,
+        motion_verified: bool = False,
+        motion_evidence: str = "",
     ) -> None:
         self.bus = int(bus)
         self.addr = int(addr)
@@ -146,6 +151,8 @@ class RaspbotServoDriver:
         self.enabled = bool(enabled)
         self.mock = bool(mock)
         self.hardware_verified = bool(hardware_verified)
+        self.motion_verified = bool(motion_verified)
+        self.motion_evidence = str(motion_evidence or "")
         self.device_path = f"/dev/i2c-{self.bus}"
         self.last_command: tuple[int, int] | None = None
 
@@ -164,6 +171,8 @@ class RaspbotServoDriver:
             "device_exists": device_exists,
             "mock": self.mock,
             "hardware_verified": self.hardware_verified,
+            "motion_verified": self.motion_verified,
+            "motion_evidence": self.motion_evidence,
         }
 
     def ctrl_servo(self, angle: int, servo_id: int | None = None) -> list[int]:
@@ -197,6 +206,8 @@ def build_neck_servo_adapter(
     enabled: bool = True,
     mock: bool = False,
     hardware_verified: bool = False,
+    motion_verified: bool = False,
+    motion_evidence: str = "",
 ) -> NeckServoCommandAdapter | UnavailableNeckServoCommandAdapter:
     """Return a narrow injected-driver adapter only on honjia."""
 
@@ -214,6 +225,8 @@ def build_neck_servo_adapter(
             enabled=enabled,
             mock=mock,
             hardware_verified=hardware_verified,
+            motion_verified=motion_verified,
+            motion_evidence=motion_evidence,
         )
     return NeckServoCommandAdapter(driver, servo_id=servo_id)
 
