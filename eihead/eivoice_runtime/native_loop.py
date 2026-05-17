@@ -45,6 +45,11 @@ class NativeVoiceLoopConfig:
     asr_model_dir: str = ""
     asr_model_type: str = "lstm"
     reply_template: str = "我听到了：{text}"
+    wake_word_required: bool = False
+    wake_words: tuple[str, ...] = ("你好鸿途",)
+    end_phrases: tuple[str, ...] = ("结束对话",)
+    wake_ack_text: str = "我在。"
+    end_ack_text: str = "好的，结束对话。"
     playback_backend: str = "aplay"
     tts_backend: str = "espeak-ng"
     tts_command: str = "espeak-ng"
@@ -98,6 +103,8 @@ class _LoopState:
     last_reply: str = ""
     last_error: str = ""
     last_status: str = "not_started"
+    conversation_active: bool = False
+    last_gate_reason: str = ""
     last_stage_latency_ms: dict[str, float] = field(default_factory=dict)
     last_dialogue_details: dict[str, Any] = field(default_factory=dict)
     current_round_id: str = ""
@@ -524,12 +531,12 @@ class NativeVoiceInteractionLoop:
         self._thread.start()
         with self._lock:
             self._state.state = "running"
-            self._state.phase = "listening"
+            self._state.phase = self._idle_phase(self._state)
             self._state.health = "healthy"
             self._state.running = True
             self._state.started_at_ts = time.time()
             self._state.updated_at_ts = self._state.started_at_ts
-            self._state.last_status = "listening"
+            self._state.last_status = self._state.phase
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -605,6 +612,7 @@ class NativeVoiceInteractionLoop:
                 "provider_diagnostics": asr_status,
             },
             "mouth": self._mouth_status(state),
+            "wakeword": self._wakeword_status(state),
             "voice_dialogue": self._dialogue_status(state),
             "realtime_audio": self._realtime_audio_status(state),
         }
@@ -655,7 +663,7 @@ class NativeVoiceInteractionLoop:
                 self._state.captured_ms = 0
                 self._state.current_round_id = ""
                 if self._state.phase != "speaking":
-                    self._state.phase = "listening"
+                    self._state.phase = self._idle_phase(self._state)
 
             if self._state.vad_triggered:
                 if (
@@ -691,6 +699,10 @@ class NativeVoiceInteractionLoop:
                 self._state.last_status = "empty_transcript"
             self._reset_vad("empty_transcript")
             return
+        gated_text = self._apply_wake_gate(text, asr_ms=asr_ms)
+        if gated_text is None:
+            return
+        text = gated_text
         with self._lock:
             self._state.phase = "thinking"
             self._state.last_status = "asr_final"
@@ -723,10 +735,90 @@ class NativeVoiceInteractionLoop:
         with self._lock:
             self._state.last_stage_latency_ms["speak"] = speak_ms
             self._state.last_stage_latency_ms["total"] = round(asr_ms + dialogue_ms + speak_ms, 2)
-            self._state.phase = "listening"
+            self._state.phase = self._idle_phase(self._state)
             self._state.last_status = "turn_complete" if speech.get("success") else "speech_error"
             self._state.updated_at_ts = time.time()
         self._reset_vad("turn_complete")
+
+    def _apply_wake_gate(self, text: str, *, asr_ms: float) -> str | None:
+        if not self.config.wake_word_required:
+            return text
+        with self._lock:
+            conversation_active = self._state.conversation_active
+
+        if conversation_active and _contains_spoken_phrase(text, self.config.end_phrases):
+            with self._lock:
+                self._state.conversation_active = False
+                self._state.last_gate_reason = "end_phrase"
+            self._finish_local_voice_turn(
+                text=text,
+                reply=self.config.end_ack_text,
+                asr_ms=asr_ms,
+                status="conversation_ended",
+                gate_reason="end_phrase",
+            )
+            return None
+
+        if conversation_active:
+            return text
+
+        remainder = _strip_wake_word_prefix(text, self.config.wake_words)
+        if remainder is None:
+            with self._lock:
+                self._state.last_transcript = text
+                self._state.last_reply = ""
+                self._state.last_stage_latency_ms = {"listen_asr": asr_ms, "total": asr_ms}
+                self._state.last_dialogue_details = {"provider": "wake_gate", "reason": "waiting_for_wake_word"}
+                self._state.last_gate_reason = "wake_word_required"
+                self._state.phase = self._idle_phase(self._state)
+                self._state.last_status = "waiting_for_wake_word"
+                self._state.updated_at_ts = time.time()
+            self._reset_vad("waiting_for_wake_word")
+            return None
+
+        with self._lock:
+            self._state.conversation_active = True
+            self._state.last_gate_reason = "wake_word_detected"
+
+        if not remainder:
+            self._finish_local_voice_turn(
+                text=text,
+                reply=self.config.wake_ack_text,
+                asr_ms=asr_ms,
+                status="wake_word_detected",
+                gate_reason="wake_word_detected",
+            )
+            return None
+        return remainder
+
+    def _finish_local_voice_turn(
+        self,
+        *,
+        text: str,
+        reply: str,
+        asr_ms: float,
+        status: str,
+        gate_reason: str,
+    ) -> None:
+        with self._lock:
+            self._state.phase = "speaking"
+            self._state.last_transcript = text
+            self._state.last_reply = reply
+            self._state.turn_count += 1
+            self._state.last_stage_latency_ms = {"listen_asr": asr_ms, "dialogue": 0.0}
+            self._state.last_dialogue_details = {"provider": "wake_gate", "reason": gate_reason}
+            self._state.last_gate_reason = gate_reason
+            self._state.last_status = "reply_ready"
+        speech = self._play_text(reply)
+        speak_ms = _safe_float(_mapping(speech.get("details")).get("playback_elapsed_ms"))
+        final_status = status if speech.get("success") else "speech_error"
+        with self._lock:
+            self._state.last_stage_latency_ms["speak"] = speak_ms
+            self._state.last_stage_latency_ms["total"] = round(asr_ms + speak_ms, 2)
+            self._state.phase = self._idle_phase(self._state)
+            self._state.last_status = final_status
+            self._state.updated_at_ts = time.time()
+        self._reset_vad(final_status)
 
     def _play_text(self, text: str) -> dict[str, Any]:
         started = time.perf_counter()
@@ -883,6 +975,7 @@ class NativeVoiceInteractionLoop:
                 "stage_latency_ms": {"listen_asr": state.last_stage_latency_ms.get("listen_asr")},
             },
             "mouth": self._mouth_status(state),
+            "wakeword": self._wakeword_status(state),
             "voice_dialogue": self._dialogue_status(state),
             "realtime_audio": self._realtime_audio_status(state),
             "current_round_id": state.current_round_id or None,
@@ -908,11 +1001,30 @@ class NativeVoiceInteractionLoop:
             "last_transcript": state.last_transcript,
             "last_reply": state.last_reply,
             "last_error": state.last_error,
+            "conversation_active": state.conversation_active,
+            "wake_word_required": self.config.wake_word_required,
+            "wake_words": list(self.config.wake_words),
+            "end_phrases": list(self.config.end_phrases),
+            "last_gate_reason": state.last_gate_reason,
             "turn_count": state.turn_count,
             "current_round_id": state.current_round_id,
             "last_stage_latency_ms": dict(state.last_stage_latency_ms),
             "dialogue": dict(state.last_dialogue_details),
             "readiness_message": "native realtime voice loop is attached",
+        }
+
+    def _wakeword_status(self, state: _LoopState) -> dict[str, Any]:
+        if not self.config.wake_word_required:
+            wake_state = "disabled"
+        else:
+            wake_state = "active" if state.conversation_active else "armed"
+        return {
+            "enabled": self.config.wake_word_required,
+            "state": wake_state,
+            "wake_words": list(self.config.wake_words),
+            "end_phrases": list(self.config.end_phrases),
+            "last_gate_reason": state.last_gate_reason,
+            "readiness_message": "wake gate is attached" if self.config.wake_word_required else "wake gate is disabled",
         }
 
     def _realtime_audio_status(self, state: _LoopState) -> dict[str, Any]:
@@ -954,7 +1066,7 @@ class NativeVoiceInteractionLoop:
     def _copy_state(self) -> _LoopState:
         return _LoopState(
             **{
-                name: dict(value) if name == "last_stage_latency_ms" else value
+                name: dict(value) if isinstance(value, dict) else value
                 for name, value in {
                     field_name: getattr(self._state, field_name)
                     for field_name in _LoopState.__dataclass_fields__
@@ -970,10 +1082,15 @@ class NativeVoiceInteractionLoop:
             self._state.captured_ms = 0
             self._state.current_round_id = ""
             if self._state.phase not in {"speaking", "stopped", "disabled"}:
-                self._state.phase = "listening"
+                self._state.phase = self._idle_phase(self._state)
             self._state.updated_at_ts = time.time()
             if reason:
                 self._state.last_status = reason
+
+    def _idle_phase(self, state: _LoopState) -> str:
+        if self.config.wake_word_required and not state.conversation_active:
+            return "awaiting_wake"
+        return "listening"
 
     def _record_error(self, exc: BaseException) -> None:
         with self._lock:
@@ -983,6 +1100,50 @@ class NativeVoiceInteractionLoop:
             self._state.last_error = str(exc)
             self._state.last_status = "error"
             self._state.updated_at_ts = time.time()
+
+
+_SPOKEN_SEPARATORS = set(" \t\r\n,，.。!！?？;；:：、\"“”'‘’（）()[]【】{}<>《》-—_…")
+
+
+def _spoken_char_map(text: str) -> tuple[str, list[int]]:
+    normalized_chars: list[str] = []
+    indexes: list[int] = []
+    for index, char in enumerate(str(text or "")):
+        if char in _SPOKEN_SEPARATORS:
+            continue
+        normalized_chars.append(char.lower())
+        indexes.append(index)
+    return "".join(normalized_chars), indexes
+
+
+def _normalize_spoken_phrase(text: str) -> str:
+    normalized, _ = _spoken_char_map(text)
+    return normalized
+
+
+def _contains_spoken_phrase(text: str, phrases: tuple[str, ...]) -> bool:
+    normalized, _ = _spoken_char_map(text)
+    for phrase in phrases:
+        normalized_phrase = _normalize_spoken_phrase(phrase)
+        if normalized_phrase and normalized_phrase in normalized:
+            return True
+    return False
+
+
+def _strip_wake_word_prefix(text: str, wake_words: tuple[str, ...]) -> str | None:
+    normalized, indexes = _spoken_char_map(text)
+    if not normalized:
+        return None
+    for wake_word in wake_words:
+        wake = _normalize_spoken_phrase(wake_word)
+        if not wake:
+            continue
+        position = normalized.find(wake)
+        if position < 0:
+            continue
+        original_end = indexes[position + len(wake) - 1] + 1
+        return str(text or "")[original_end:].strip("".join(_SPOKEN_SEPARATORS))
+    return None
 
 
 def _pcm_to_float_samples(pcm_bytes: bytes, *, channels: int) -> list[float]:

@@ -180,6 +180,102 @@ def test_native_voice_turn_uses_dialogue_client_reply_before_tts() -> None:
     assert status["last_turn"] == {"transcript": "你好鸿佳", "reply": "我是 eibrain。", "status": "turn_complete"}
 
 
+def test_native_voice_waits_for_wake_word_when_required() -> None:
+    from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
+
+    capture_source = StoppableCaptureSource()
+    dialogue = FakeDialogueClient(reply="不应该被调用")
+    spoken: list[str] = []
+
+    loop = NativeVoiceInteractionLoop(
+        NativeVoiceLoopConfig(wake_word_required=True, playback_echo_cooldown_ms=0),
+        capture_source=capture_source,  # type: ignore[arg-type]
+        transcriber=OneShotTranscriber("旁边有声音"),  # type: ignore[arg-type]
+        dialogue_client=dialogue,
+        tts_synthesizer=None,
+    )
+    loop._play_text = lambda text: spoken.append(text) or {  # type: ignore[method-assign]
+        "status": "ok",
+        "success": True,
+        "details": {"playback_elapsed_ms": 7},
+    }
+    loop._frames.append(_pcm_frame(1, payload=b"\x01\x02"))
+
+    loop._finalize_utterance()
+
+    assert dialogue.requests == []
+    assert spoken == []
+    status = loop.voice_status()
+    assert status["wakeword"]["state"] == "armed"
+    assert status["voice_dialogue"]["conversation_active"] is False
+    assert status["voice_dialogue"]["last_status"] == "waiting_for_wake_word"
+    assert status["voice_dialogue"]["last_transcript"] == "旁边有声音"
+
+
+def test_native_voice_wake_word_activates_and_strips_prompt() -> None:
+    from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
+
+    capture_source = StoppableCaptureSource()
+    dialogue = FakeDialogueClient(reply="我是鸿途。")
+    spoken: list[str] = []
+
+    loop = NativeVoiceInteractionLoop(
+        NativeVoiceLoopConfig(wake_word_required=True, playback_echo_cooldown_ms=0),
+        capture_source=capture_source,  # type: ignore[arg-type]
+        transcriber=OneShotTranscriber("你好鸿途 介绍一下你自己"),  # type: ignore[arg-type]
+        dialogue_client=dialogue,
+        tts_synthesizer=None,
+    )
+    loop._play_text = lambda text: spoken.append(text) or {  # type: ignore[method-assign]
+        "status": "ok",
+        "success": True,
+        "details": {"playback_elapsed_ms": 7},
+    }
+    loop._frames.append(_pcm_frame(1, payload=b"\x01\x02"))
+
+    loop._finalize_utterance()
+
+    assert dialogue.requests[0]["text"] == "介绍一下你自己"
+    assert spoken == ["我是鸿途。"]
+    status = loop.voice_status()
+    assert status["wakeword"]["state"] == "active"
+    assert status["voice_dialogue"]["conversation_active"] is True
+    assert status["voice_dialogue"]["last_transcript"] == "介绍一下你自己"
+
+
+def test_native_voice_end_phrase_closes_conversation_without_dialogue() -> None:
+    from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
+
+    capture_source = StoppableCaptureSource()
+    dialogue = FakeDialogueClient(reply="不应该被调用")
+    spoken: list[str] = []
+
+    loop = NativeVoiceInteractionLoop(
+        NativeVoiceLoopConfig(wake_word_required=True, playback_echo_cooldown_ms=0),
+        capture_source=capture_source,  # type: ignore[arg-type]
+        transcriber=OneShotTranscriber("结束对话"),  # type: ignore[arg-type]
+        dialogue_client=dialogue,
+        tts_synthesizer=None,
+    )
+    loop._play_text = lambda text: spoken.append(text) or {  # type: ignore[method-assign]
+        "status": "ok",
+        "success": True,
+        "details": {"playback_elapsed_ms": 7},
+    }
+    with loop._lock:
+        loop._state.conversation_active = True
+    loop._frames.append(_pcm_frame(1, payload=b"\x01\x02"))
+
+    loop._finalize_utterance()
+
+    assert dialogue.requests == []
+    assert spoken == ["好的，结束对话。"]
+    status = loop.voice_status()
+    assert status["wakeword"]["state"] == "armed"
+    assert status["voice_dialogue"]["conversation_active"] is False
+    assert status["voice_dialogue"]["last_status"] == "conversation_ended"
+
+
 def test_eibrain_subprocess_dialogue_client_parses_play_speech_action() -> None:
     from eihead.eivoice_runtime.native_loop import EIBrainSubprocessDialogueClient, NativeVoiceLoopConfig
 

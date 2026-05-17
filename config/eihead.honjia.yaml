@@ -96,6 +96,17 @@ capabilities:
       actor_id: darrow
       head_instance_id: honjia
       brain_instance_id: honxin
+      wake_word_required: true
+      wake_words:
+        - 你好鸿途
+        - 你好宏图
+        - 你好洪图
+        - 你好黄土
+        - 你好黄图
+      end_phrases:
+        - 结束对话
+      wake_ack_text: 我在。
+      end_ack_text: 好的，结束对话。
       limits:
         protocol: eiprotocol
         transport: subprocess

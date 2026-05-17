@@ -629,6 +629,11 @@ def test_native_voice_loop_config_reads_honjia_audio_devices_and_lstm_model_type
                 "      timeout_s: 55",
                 "      session_id: honjia-voice",
                 "      actor_id: darrow",
+                "      wake_word_required: true",
+                "      wake_words: [你好鸿途, 你好宏图]",
+                "      end_phrases: [结束对话]",
+                "      wake_ack_text: 我在。",
+                "      end_ack_text: 好的，结束对话。",
             ]
         ),
         encoding="utf-8",
@@ -668,6 +673,11 @@ def test_native_voice_loop_config_reads_honjia_audio_devices_and_lstm_model_type
     assert loop_config.dialogue_timeout_s == 55
     assert loop_config.dialogue_session_id == "honjia-voice"
     assert loop_config.dialogue_actor_id == "darrow"
+    assert loop_config.wake_word_required is True
+    assert loop_config.wake_words == ("你好鸿途", "你好宏图")
+    assert loop_config.end_phrases == ("结束对话",)
+    assert loop_config.wake_ack_text == "我在。"
+    assert loop_config.end_ack_text == "好的，结束对话。"
     assert runtime is not None
 
 
