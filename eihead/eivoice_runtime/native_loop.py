@@ -1135,15 +1135,24 @@ def _strip_wake_word_prefix(text: str, wake_words: tuple[str, ...]) -> str | Non
     if not normalized:
         return None
     for wake_word in wake_words:
-        wake = _normalize_spoken_phrase(wake_word)
-        if not wake:
-            continue
-        position = normalized.find(wake)
-        if position < 0:
-            continue
-        original_end = indexes[position + len(wake) - 1] + 1
-        return str(text or "")[original_end:].strip("".join(_SPOKEN_SEPARATORS))
+        for wake in _wake_word_candidates(wake_word):
+            if not normalized.startswith(wake):
+                continue
+            original_end = indexes[len(wake) - 1] + 1
+            return str(text or "")[original_end:].strip("".join(_SPOKEN_SEPARATORS))
     return None
+
+
+def _wake_word_candidates(wake_word: str) -> tuple[str, ...]:
+    wake = _normalize_spoken_phrase(wake_word)
+    if not wake:
+        return ()
+    candidates = [wake]
+    for greeting in ("你好", "您好"):
+        prefix = _normalize_spoken_phrase(greeting)
+        if wake.startswith(prefix) and len(wake) > len(prefix):
+            candidates.append(wake[len(prefix) :])
+    return tuple(dict.fromkeys(candidates))
 
 
 def _pcm_to_float_samples(pcm_bytes: bytes, *, channels: int) -> list[float]:

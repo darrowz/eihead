@@ -243,6 +243,40 @@ def test_native_voice_wake_word_activates_and_strips_prompt() -> None:
     assert status["voice_dialogue"]["last_transcript"] == "介绍一下你自己"
 
 
+def test_native_voice_wake_word_tolerates_asr_dropped_greeting() -> None:
+    from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
+
+    capture_source = StoppableCaptureSource()
+    dialogue = FakeDialogueClient(reply="我是鸿途。")
+    spoken: list[str] = []
+
+    loop = NativeVoiceInteractionLoop(
+        NativeVoiceLoopConfig(
+            wake_word_required=True,
+            wake_words=("你好宏图",),
+            playback_echo_cooldown_ms=0,
+        ),
+        capture_source=capture_source,  # type: ignore[arg-type]
+        transcriber=OneShotTranscriber("宏图介绍一下你自己"),  # type: ignore[arg-type]
+        dialogue_client=dialogue,
+        tts_synthesizer=None,
+    )
+    loop._play_text = lambda text: spoken.append(text) or {  # type: ignore[method-assign]
+        "status": "ok",
+        "success": True,
+        "details": {"playback_elapsed_ms": 7},
+    }
+    loop._frames.append(_pcm_frame(1, payload=b"\x01\x02"))
+
+    loop._finalize_utterance()
+
+    assert dialogue.requests[0]["text"] == "介绍一下你自己"
+    assert spoken == ["我是鸿途。"]
+    status = loop.voice_status()
+    assert status["wakeword"]["state"] == "active"
+    assert status["voice_dialogue"]["conversation_active"] is True
+
+
 def test_native_voice_end_phrase_closes_conversation_without_dialogue() -> None:
     from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
 
