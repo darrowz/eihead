@@ -20,6 +20,7 @@ from .eivoice_runtime import build_eivoice_runtime_panel, eivoice_runtime_status
 from .neck import build_neck_diagnostics_from_app
 from .realtime_vision import realtime_vision_payload_from_app
 from .voice import build_voice_diagnostics_from_app
+from .voice_test import run_voice_manual_test
 
 
 JsonObject = dict[str, Any]
@@ -163,13 +164,18 @@ def create_handler(
 
         def _dispatch(self, method: str) -> None:
             try:
-                if method != "GET":
+                if method == "GET":
+                    self._route_get()
+                    return
+                if method == "POST":
+                    self._route_post()
+                    return
+                else:
                     raise EiheadMonitorError(
                         HTTPStatus.METHOD_NOT_ALLOWED,
                         "method_not_allowed",
                         f"{method} is not supported by eihead monitor",
                     )
-                self._route_get()
             except EiheadMonitorError as exc:
                 self._write_error(exc.status_code, exc.code, str(exc), details=exc.details)
             except Exception as exc:
@@ -226,6 +232,52 @@ def create_handler(
                 self._write_json(HTTPStatus.OK, _recent_events_payload(runtime_app, now()))
                 return
             raise EiheadMonitorError(HTTPStatus.NOT_FOUND, "not_found", f"unknown path: {path}")
+
+        def _route_post(self) -> None:
+            path = _normalize_path(self.path)
+            if path == "/api/voice/test":
+                payload = self._read_json_body()
+                self._write_json(
+                    HTTPStatus.OK,
+                    run_voice_manual_test(runtime_app, payload, timestamp=now()),
+                )
+                return
+            raise EiheadMonitorError(HTTPStatus.NOT_FOUND, "not_found", f"unknown path: {path}")
+
+        def _read_json_body(self) -> JsonObject:
+            raw_length = self.headers.get("Content-Length", "0")
+            try:
+                length = int(raw_length)
+            except ValueError as exc:
+                raise EiheadMonitorError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_content_length",
+                    "Content-Length must be an integer",
+                ) from exc
+            if length <= 0:
+                return {}
+            if length > 65536:
+                raise EiheadMonitorError(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    "request_too_large",
+                    "request body is too large",
+                )
+            raw_body = self.rfile.read(length)
+            try:
+                payload = json.loads(raw_body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise EiheadMonitorError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_json",
+                    "request body must be a JSON object",
+                ) from exc
+            if not isinstance(payload, Mapping):
+                raise EiheadMonitorError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_json",
+                    "request body must be a JSON object",
+                )
+            return dict(payload)
 
         def _write_json(self, status_code: int, payload: Mapping[str, Any]) -> None:
             body = json.dumps(dict(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -947,6 +999,20 @@ def _render_lightweight_index(timestamp: float) -> str:
       font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       font-size: 12px;
     }}
+    .action-row {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }}
+    button {{
+      border: 1px solid rgba(0, 217, 146, 0.42);
+      border-radius: 6px;
+      background: rgba(0, 217, 146, 0.08);
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 650;
+      min-height: 38px;
+      padding: 8px 12px;
+    }}
+    button:hover {{ border-color: rgba(0, 217, 146, 0.75); }}
+    button:disabled {{ cursor: wait; opacity: 0.58; }}
     @media (max-width: 860px) {{
       main {{ padding: 24px 16px 36px; }}
       .wide-grid {{ grid-template-columns: 1fr; }}
@@ -996,6 +1062,16 @@ def _render_lightweight_index(timestamp: float) -> str:
       <div class="card"><div class="label">视觉证据</div><div class="rows" id="vision-evidence"></div></div>
       <div class="card"><div class="label">脖子证据</div><div class="rows" id="neck-evidence"></div></div>
       <div class="card"><div class="label">语音证据</div><div class="rows" id="voice-evidence"></div></div>
+      <div class="card">
+        <div class="label">语音自测</div>
+        <div class="action-row">
+          <button type="button" id="voice-mic-test">测麦克风</button>
+          <button type="button" id="voice-speaker-test">播放测试音</button>
+        </div>
+        <div class="rows" id="voice-test-result">
+          <div class="row"><span>状态</span><span>等待操作</span></div>
+        </div>
+      </div>
       <div class="card"><div class="label">运行证据</div><div class="rows" id="health-evidence"></div></div>
     </section>
 
@@ -1006,6 +1082,7 @@ def _render_lightweight_index(timestamp: float) -> str:
       <a href="/api/vision/realtime">/api/vision/realtime</a>
       <a href="/api/neck/status">/api/neck/status</a>
       <a href="/api/voice/realtime">/api/voice/realtime</a>
+      <a href="/api/voice/test">/api/voice/test</a>
       <a href="/api/capabilities">/api/capabilities</a>
     </div>
   </main>
@@ -1015,8 +1092,19 @@ def _render_lightweight_index(timestamp: float) -> str:
       setTimeout(() => controller.abort(), ms);
       return controller.signal;
     }};
+    const encodeJson = JSON['stringify'];
     async function loadJson(path) {{
       const response = await fetch(path, {{ cache: 'no-store', signal: timeoutSignal(3500) }});
+      return await response.json();
+    }}
+    async function postJson(path, payload) {{
+      const response = await fetch(path, {{
+        method: 'POST',
+        cache: 'no-store',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: encodeJson(payload),
+        signal: timeoutSignal(12000),
+      }});
       return await response.json();
     }}
     function setText(id, text) {{
@@ -1105,6 +1193,40 @@ def _render_lightweight_index(timestamp: float) -> str:
     function voiceReadiness(voice) {{
       const chain = voice.voice_chain_readiness || {{}};
       return first(voice.readiness_message, chain.readinessMessage, chain.summary, '未知');
+    }}
+    function voiceTestLevel(result) {{
+      if (result.rms_dbfs === undefined && result.peak_dbfs === undefined) return '未知';
+      return `RMS=${{metric(result.rms_dbfs, ' dBFS')}} / 峰值=${{metric(result.peak_dbfs, ' dBFS')}}`;
+    }}
+    function voiceTestRows(result) {{
+      return [
+        ['状态', result.status],
+        ['类型', result.kind === 'speaker' ? '扬声器' : '麦克风'],
+        ['设备', result.device],
+        ['时长', metric(result.duration_s || result.requested_duration_s, 's')],
+        ['音量', voiceTestLevel(result)],
+        ['文件', result.file],
+        ['说明', result.readiness_message],
+      ];
+    }}
+    async function runVoiceTest(kind) {{
+      const micButton = document.getElementById('voice-mic-test');
+      const speakerButton = document.getElementById('voice-speaker-test');
+      micButton.disabled = true;
+      speakerButton.disabled = true;
+      setRows('voice-test-result', [['状态', kind === 'speaker' ? '正在播放测试音' : '正在录音 2 秒']]);
+      try {{
+        const payload = kind === 'speaker'
+          ? {{ kind: 'speaker', duration_s: 0.7, frequency_hz: 660 }}
+          : {{ kind: 'microphone', duration_s: 2 }};
+        const result = await postJson('/api/voice/test', payload);
+        setRows('voice-test-result', voiceTestRows(result));
+      }} catch (error) {{
+        setRows('voice-test-result', [['状态', '请求失败'], ['说明', String(error)]]);
+      }} finally {{
+        micButton.disabled = false;
+        speakerButton.disabled = false;
+      }}
     }}
     function nextStepRows(health, vision, neck, voice) {{
       const rows = [];
@@ -1202,6 +1324,8 @@ def _render_lightweight_index(timestamp: float) -> str:
       setRows('next-steps', nextStepRows(health, vision, neck, voice));
       setBlockers(buildBlockers(health, vision, neck, voice));
     }});
+    document.getElementById('voice-mic-test').addEventListener('click', () => runVoiceTest('microphone'));
+    document.getElementById('voice-speaker-test').addEventListener('click', () => runVoiceTest('speaker'));
   </script>
 </body>
 </html>
