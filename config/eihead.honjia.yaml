@@ -77,8 +77,8 @@ capabilities:
       audio_format: wav
       sample_rate: 32000
       command: espeak-ng
-      voice: cmn
-      rate_wpm: 150
+      voice: zh
+      rate_wpm: 135
       playback_echo_cooldown_ms: 1200
       limits:
         streaming: false
