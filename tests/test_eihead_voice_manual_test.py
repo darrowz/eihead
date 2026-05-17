@@ -128,7 +128,7 @@ def test_monitor_exposes_voice_manual_test_post(tmp_path: Path, monkeypatch: pyt
     assert payload["captured_at_ts"] == 123.0
 
 
-def test_lightweight_monitor_renders_voice_manual_test_controls(
+def test_lightweight_monitor_hides_voice_manual_test_controls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -138,9 +138,9 @@ def test_lightweight_monitor_renders_voice_manual_test_controls(
     with running_server(app) as base_url:
         body = read_text(f"{base_url}/")
 
-    assert "语音自测" in body
-    assert "测麦克风" in body
-    assert "播放测试音" in body
+    assert "语音自测" not in body
+    assert "测麦克风" not in body
+    assert "播放测试音" not in body
     assert "/api/voice/test" in body
 
 

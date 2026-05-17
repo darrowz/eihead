@@ -953,7 +953,6 @@ def _render_lightweight_index(timestamp: float) -> str:
     .pill.warn {{ border-color: rgba(244, 201, 93, 0.5); color: var(--warn); }}
     .pill.bad {{ border-color: rgba(255, 107, 107, 0.55); color: var(--bad); }}
     .grid {{ display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }}
-    .wide-grid {{ display: grid; gap: 12px; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .9fr); }}
     .card {{
       min-width: 0;
       background: var(--surface);
@@ -995,18 +994,6 @@ def _render_lightweight_index(timestamp: float) -> str:
       font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       overflow-wrap: anywhere;
     }}
-    .blockers {{ display: grid; gap: 10px; }}
-    .blocker {{
-      border: 1px solid var(--hairline);
-      border-left: 3px solid var(--warn);
-      border-radius: 8px;
-      background: var(--surface-soft);
-      padding: 14px;
-    }}
-    .blocker.bad {{ border-left-color: var(--bad); }}
-    .blocker.good {{ border-left-color: var(--green); }}
-    .blocker-title {{ color: var(--ink); font-weight: 700; }}
-    .blocker-body {{ margin-top: 4px; color: var(--body); }}
     .endpoint-bar {{ display: flex; flex-wrap: wrap; gap: 8px; }}
     .endpoint-bar a {{
       border: 1px solid var(--hairline);
@@ -1017,23 +1004,8 @@ def _render_lightweight_index(timestamp: float) -> str:
       font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       font-size: 12px;
     }}
-    .action-row {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }}
-    button {{
-      border: 1px solid rgba(0, 217, 146, 0.42);
-      border-radius: 6px;
-      background: rgba(0, 217, 146, 0.08);
-      color: var(--ink);
-      cursor: pointer;
-      font: inherit;
-      font-weight: 650;
-      min-height: 38px;
-      padding: 8px 12px;
-    }}
-    button:hover {{ border-color: rgba(0, 217, 146, 0.75); }}
-    button:disabled {{ cursor: wait; opacity: 0.58; }}
     @media (max-width: 860px) {{
       main {{ padding: 24px 16px 36px; }}
-      .wide-grid {{ grid-template-columns: 1fr; }}
       .row {{ grid-template-columns: 1fr; }}
       .metric {{ font-size: 18px; }}
     }}
@@ -1044,7 +1016,7 @@ def _render_lightweight_index(timestamp: float) -> str:
     <header>
       <div class="eyebrow">HONJIA LIVE DIAGNOSTICS</div>
       <h1>eihead 真机监控台</h1>
-      <p>lightweight shell · generated {generated_at} · 页面会读取实时 API，但只展示可判断的中文结论、具体数据、证据和下一步动作。</p>
+      <p>lightweight shell · generated {generated_at} · 页面会读取实时 API，并展示可判断的中文结论、具体数据和证据。</p>
       <div class="topline">
         <span class="pill" id="health-pill">健康：读取中</span>
         <span class="pill" id="vision-pill">视觉：读取中</span>
@@ -1052,20 +1024,6 @@ def _render_lightweight_index(timestamp: float) -> str:
         <span class="pill" id="voice-pill">语音：读取中</span>
       </div>
     </header>
-    <section class="wide-grid">
-      <div class="card hot">
-        <div class="label">阻塞点</div>
-        <div class="blockers" id="blockers">
-          <div class="blocker"><div class="blocker-title">正在读取 honjia</div><div class="blocker-body">等待健康、视觉、脖子、语音四组实时数据返回。</div></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="label">下一步</div>
-        <div class="rows" id="next-steps">
-          <div class="row"><span>建议</span><span>读取完成后生成</span></div>
-        </div>
-      </div>
-    </section>
 
     <h2>具体数据</h2>
     <section class="grid">
@@ -1080,16 +1038,6 @@ def _render_lightweight_index(timestamp: float) -> str:
       <div class="card"><div class="label">视觉证据</div><div class="rows" id="vision-evidence"></div></div>
       <div class="card"><div class="label">脖子证据</div><div class="rows" id="neck-evidence"></div></div>
       <div class="card"><div class="label">语音证据</div><div class="rows" id="voice-evidence"></div></div>
-      <div class="card">
-        <div class="label">语音自测</div>
-        <div class="action-row">
-          <button type="button" id="voice-mic-test">测麦克风</button>
-          <button type="button" id="voice-speaker-test">播放测试音</button>
-        </div>
-        <div class="rows" id="voice-test-result">
-          <div class="row"><span>状态</span><span>等待操作</span></div>
-        </div>
-      </div>
       <div class="card"><div class="label">运行证据</div><div class="rows" id="health-evidence"></div></div>
     </section>
 
@@ -1110,19 +1058,8 @@ def _render_lightweight_index(timestamp: float) -> str:
       setTimeout(() => controller.abort(), ms);
       return controller.signal;
     }};
-    const encodeJson = JSON['stringify'];
     async function loadJson(path) {{
       const response = await fetch(path, {{ cache: 'no-store', signal: timeoutSignal(3500) }});
-      return await response.json();
-    }}
-    async function postJson(path, payload) {{
-      const response = await fetch(path, {{
-        method: 'POST',
-        cache: 'no-store',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: encodeJson(payload),
-        signal: timeoutSignal(12000),
-      }});
       return await response.json();
     }}
     function setText(id, text) {{
@@ -1163,23 +1100,6 @@ def _render_lightweight_index(timestamp: float) -> str:
         row.append(left, right);
         root.append(row);
       }});
-    }}
-    function blocker(title, body, tone = 'warn') {{
-      const item = document.createElement('div');
-      item.className = `blocker ${{tone}}`;
-      const titleEl = document.createElement('div');
-      titleEl.className = 'blocker-title';
-      titleEl.textContent = title;
-      const bodyEl = document.createElement('div');
-      bodyEl.className = 'blocker-body';
-      bodyEl.textContent = body;
-      item.append(titleEl, bodyEl);
-      return item;
-    }}
-    function setBlockers(items) {{
-      const root = document.getElementById('blockers');
-      root.innerHTML = '';
-      items.forEach((item) => root.append(item));
     }}
     function first(...values) {{
       return values.find((value) => value !== null && value !== undefined && value !== '');
@@ -1227,70 +1147,6 @@ def _render_lightweight_index(timestamp: float) -> str:
       if (audio.audio_level !== undefined) parts.push(`level=${{metric(audio.audio_level)}}`);
       if (audio.rms_dbfs !== undefined) parts.push(`rms=${{metric(audio.rms_dbfs, 'dBFS')}}`);
       return parts.length ? parts.join(' / ') : '未知';
-    }}
-    function voiceTestLevel(result) {{
-      if (result.rms_dbfs === undefined && result.peak_dbfs === undefined) return '未知';
-      return `RMS=${{metric(result.rms_dbfs, ' dBFS')}} / 峰值=${{metric(result.peak_dbfs, ' dBFS')}}`;
-    }}
-    function voiceTestRows(result) {{
-      return [
-        ['状态', result.status],
-        ['类型', result.kind === 'speaker' ? '扬声器' : '麦克风'],
-        ['设备', result.device],
-        ['时长', metric(result.duration_s || result.requested_duration_s, 's')],
-        ['音量', voiceTestLevel(result)],
-        ['文件', result.file],
-        ['说明', result.readiness_message],
-      ];
-    }}
-    async function runVoiceTest(kind) {{
-      const micButton = document.getElementById('voice-mic-test');
-      const speakerButton = document.getElementById('voice-speaker-test');
-      micButton.disabled = true;
-      speakerButton.disabled = true;
-      setRows('voice-test-result', [['状态', kind === 'speaker' ? '正在播放测试音' : '正在录音 2 秒']]);
-      try {{
-        const payload = kind === 'speaker'
-          ? {{ kind: 'speaker', duration_s: 0.7, frequency_hz: 660 }}
-          : {{ kind: 'microphone', duration_s: 2 }};
-        const result = await postJson('/api/voice/test', payload);
-        setRows('voice-test-result', voiceTestRows(result));
-      }} catch (error) {{
-        setRows('voice-test-result', [['状态', '请求失败'], ['说明', String(error)]]);
-      }} finally {{
-        micButton.disabled = false;
-        speakerButton.disabled = false;
-      }}
-    }}
-    function nextStepRows(health, vision, neck, voice) {{
-      const rows = [];
-      if (statusTone(vision.status) === 'bad') rows.push(['视觉', '先修 eihead 实时 eye provider 或 vision service 模块路径，直到 /api/vision/realtime 有 frame_id、fps、detections。']);
-      if (statusTone(neck.status) === 'bad') rows.push(['脖子', '把 native neck diagnostics 暴露到 runtime app，至少返回 current_angle、target_angle、servo.status。']);
-      if (statusTone(voice.status) === 'bad') rows.push(['语音', '接入实时 audio/voice diagnostics，确认 realtime_audio.running、round、scheduler 不再 unknown。']);
-      if (statusTone(health.status) !== 'good') rows.push(['运行', '先处理 /health 非 ok，再判断单个硬件链路。']);
-      if (!rows.length) rows.push(['验收', '四组状态都在线，可进入动作闭环、延迟和稳定性压测。']);
-      return rows;
-    }}
-    function buildBlockers(health, vision, neck, voice) {{
-      const items = [];
-      if (statusTone(health.status) !== 'good') {{
-        items.push(blocker('Web/API 健康异常', `health=${{text(health.status)}}，runtime=${{text(health.runtime)}}。`, 'bad'));
-      }}
-      if (statusTone(vision.status) === 'bad') {{
-        items.push(blocker('视觉实时流未打通', `状态=${{text(vision.status)}}，freshness=${{sourceFreshness(vision)}}，frame=${{text(vision.frame_id)}}，fps=${{metric(vision.fps)}}。`, 'bad'));
-      }} else if (statusTone(vision.status) === 'warn') {{
-        items.push(blocker('视觉实时流需要确认', `状态=${{text(vision.status)}}，frame age=${{metric(first(vision.last_frame_age_s, vision.last_frame_age), 's')}}。`, 'warn'));
-      }}
-      if (statusTone(neck.status) === 'bad') {{
-        items.push(blocker('脖子诊断未接入', `状态=${{text(neck.status)}}，servo=${{text((neck.servo || {{}}).status)}}，说明=${{text(neck.readiness_message)}}。`, 'bad'));
-      }}
-      if (statusTone(voice.status) === 'bad') {{
-        items.push(blocker('语音实时链路未接入', `状态=${{text(voice.status)}}，realtime_audio.running=${{text((voice.realtime_audio || {{}}).running)}}，说明=${{voiceReadiness(voice)}}。`, 'bad'));
-      }}
-      if (!items.length) {{
-        items.push(blocker('没有发现硬阻塞', '健康、视觉、脖子、语音都没有报告 blocked/not_wired/offline，可继续做闭环联调。', 'good'));
-      }}
-      return items;
     }}
     Promise.allSettled([
       loadJson('/health'),
@@ -1356,11 +1212,7 @@ def _render_lightweight_index(timestamp: float) -> str:
         ['Mouth provider', providerSummary(health, 'mouth')],
         ['Neck provider', providerSummary(health, 'neck')],
       ]);
-      setRows('next-steps', nextStepRows(health, vision, neck, voice));
-      setBlockers(buildBlockers(health, vision, neck, voice));
     }});
-    document.getElementById('voice-mic-test').addEventListener('click', () => runVoiceTest('microphone'));
-    document.getElementById('voice-speaker-test').addEventListener('click', () => runVoiceTest('speaker'));
   </script>
 </body>
 </html>

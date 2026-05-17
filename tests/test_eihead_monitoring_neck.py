@@ -376,11 +376,11 @@ def test_monitor_lightweight_root_renders_human_diagnostics_instead_of_raw_json(
         status_code, _headers, body = read_text(f"{base_url}/")
 
     assert status_code == 200
-    assert "阻塞点" in body
+    assert "阻塞点" not in body
     assert "证据" in body
     assert "运动验证" in body
     assert "本次指令会动" in body
-    assert "下一步" in body
+    assert "下一步" not in body
     assert "具体数据" in body
     assert "Latest JSON" not in body
     assert "JSON.stringify" not in body
