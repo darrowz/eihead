@@ -55,11 +55,29 @@ fi
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
 
-if [ -f "$RELEASE_DIR/deploy/systemd/eihead-vision-hailo.service" ]; then
-  sudo cp "$RELEASE_DIR/deploy/systemd/eihead-vision-hailo.service" /etc/systemd/system/eihead-vision-hailo.service
+INSTALLED_UNITS=()
+for unit in eihead-runtime.service eihead-monitor.service eihead-vision-hailo.service; do
+  if [ -f "$RELEASE_DIR/deploy/systemd/$unit" ]; then
+    sudo cp "$RELEASE_DIR/deploy/systemd/$unit" "/etc/systemd/system/$unit"
+    INSTALLED_UNITS+=("$unit")
+  fi
+done
+
+if [ "${#INSTALLED_UNITS[@]}" -gt 0 ]; then
   sudo systemctl daemon-reload
-  sudo systemctl enable eihead-vision-hailo.service >/dev/null
-  sudo systemctl restart eihead-vision-hailo.service
+  for unit in "${INSTALLED_UNITS[@]}"; do
+    sudo systemctl enable "$unit" >/dev/null
+  done
+fi
+
+for unit in eihead-runtime.service eihead-monitor.service eihead-vision-hailo.service; do
+  if printf '%s\n' "${INSTALLED_UNITS[@]}" | grep -qx "$unit"; then
+    sudo systemctl restart "$unit"
+  fi
+done
+
+if [ "${#INSTALLED_UNITS[@]}" -gt 0 ]; then
+  echo "systemd_units=${INSTALLED_UNITS[*]}"
 fi
 
 echo "release=$RELEASE_DIR"

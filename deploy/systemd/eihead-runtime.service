@@ -13,6 +13,7 @@ Environment=EIHEAD_CONFIG=/etc/eihead/eihead.honjia.yaml
 Environment=EIHEAD_EXPORT_MANIFEST=/opt/eihead/current/EXPORT_MANIFEST.json
 Environment=EIHEAD_RUNTIME_HOST=0.0.0.0
 Environment=EIHEAD_RUNTIME_PORT=18081
+Environment=PYTHONPATH=/opt/eihead/current:/dev-project/eiprotocol:/usr/lib/python3/dist-packages:/home/darrow/.local/lib/python3.13/site-packages
 EnvironmentFile=-/etc/eihead/eihead.env
 ExecStart=/opt/eihead/current/.venv/bin/eihead-runtime --config /etc/eihead/eihead.honjia.yaml http --host 0.0.0.0 --port 18081
 Restart=always
