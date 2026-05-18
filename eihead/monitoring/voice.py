@@ -126,6 +126,14 @@ def _build_voice_payload(
         latency=latency,
         bottleneck=bottleneck,
     )
+    voice_chain = _voice_chain_payload(
+        data,
+        dialogue_source,
+        mouth=mouth,
+        latency=latency,
+        last_turn=last_turn,
+        optimization=optimization,
+    )
     is_wired = derived_wired if wired is None else bool(wired and derived_wired)
     readiness_message = _voice_readiness_message(
         data,
@@ -164,6 +172,7 @@ def _build_voice_payload(
         "microfeedback": microfeedback,
         "latency": latency,
         "optimization": optimization,
+        "voice_chain": voice_chain,
         "realtime_session": realtime_session,
         "realtime_events": realtime_events,
         "event_count": event_count,
@@ -1336,6 +1345,91 @@ def _optimization_realtime_audio(realtime_audio: Mapping[str, Any] | None) -> di
             _first_value(realtime_audio, "silence_after_voice_ms", "silenceAfterVoiceMs")
         ),
     }
+
+
+def _voice_chain_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    *,
+    mouth: Mapping[str, Any] | None,
+    latency: Mapping[str, Any] | None,
+    last_turn: Mapping[str, Any] | None,
+    optimization: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    wakeword = _mapping_from_keys(optimization, "wakeword") or _optimization_wakeword(data, dialogue)
+    latency_ms = _latency_ms_payload(latency)
+    state = _voice_chain_state(data, dialogue, wakeword=wakeword)
+    return {
+        "state": state,
+        "state_label": _voice_chain_state_label(state),
+        "wake_state": _first_text(
+            _first_value(wakeword, "state"),
+            _first_value(dialogue, "phase"),
+            _first_value(data, "phase"),
+        ),
+        "wake_enabled": _json_ready(_first_value(wakeword, "enabled")),
+        "conversation_active": _truthy(_first_value(wakeword, "conversation_active"))
+        or _truthy(_first_value(dialogue, "conversation_active")),
+        "phase": _first_text(_first_value(dialogue, "phase"), _first_value(data, "phase")),
+        "last_status": _first_text(_first_value(dialogue, "last_status"), _first_value(data, "last_status")),
+        "last_asr_text": _first_text(
+            _first_value(dialogue, "last_transcript"),
+            _first_value(last_turn, "transcript", "text"),
+            _first_value(data, "last_transcript"),
+        ),
+        "last_tts_text": _first_text(
+            _first_value(dialogue, "last_reply"),
+            _first_value(last_turn, "reply", "response"),
+            _first_value(mouth, "text_preview"),
+            _first_value(data, "last_reply"),
+        ),
+        "latency_ms": latency_ms,
+        "steps": [
+            {
+                "key": key,
+                "label": label,
+                "latency_ms": latency_ms.get(key),
+            }
+            for key, label in (
+                ("listen_asr", "ASR 识别"),
+                ("dialogue", "脑端回复"),
+                ("speak", "TTS 播放"),
+                ("total", "总耗时"),
+            )
+        ],
+    }
+
+
+def _voice_chain_state(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    *,
+    wakeword: Mapping[str, Any] | None,
+) -> str:
+    if _truthy(_first_value(wakeword, "conversation_active")) or _truthy(_first_value(dialogue, "conversation_active")):
+        return "awake"
+    wake_state = _normalized_text(_first_value(wakeword, "state"))
+    if wake_state in {"active", "awake", "conversation", "triggered", "wake_detected", "woken"}:
+        return "awake"
+    if wake_state in {"armed", "sleeping", "idle", "waiting", "standby", "dormant"}:
+        return "sleeping"
+    phase = _normalized_text(_first_value(dialogue, "phase"))
+    last_status = _normalized_text(
+        _first_text(_first_value(dialogue, "last_status"), _first_value(data, "last_status"))
+    )
+    if phase in {"thinking", "speaking", "responding"} or last_status in {"thinking", "speaking", "responding"}:
+        return "awake"
+    if _first_value(wakeword, "enabled") is not None or _first_value(dialogue, "wake_word_required") is not None:
+        return "sleeping"
+    return "unknown"
+
+
+def _voice_chain_state_label(state: str) -> str:
+    if state == "awake":
+        return "唤醒"
+    if state == "sleeping":
+        return "休眠"
+    return "未知"
 
 
 def _last_turn_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, Any] | None) -> dict[str, Any] | None:

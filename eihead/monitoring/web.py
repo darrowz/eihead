@@ -690,6 +690,10 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_tts_playback = _display_value(_voice_tts_playback_summary(voice))
     voice_mic_vad = _display_value(_voice_mic_vad_summary(voice))
     voice_asr_detail = _display_value(_voice_asr_detail_summary(voice))
+    voice_chain_state = _display_value(_voice_chain_state_summary(voice.get("voice_chain")))
+    voice_chain_steps = _display_value(_voice_chain_steps_summary(voice.get("voice_chain")))
+    voice_chain_asr = _display_value(_voice_chain_text(voice.get("voice_chain"), "last_asr_text"))
+    voice_chain_tts = _display_value(_voice_chain_text(voice.get("voice_chain"), "last_tts_text"))
     eivoice_conversation = _display_value(eivoice_panel.get("conversationState", "unknown"))
     eivoice_dropped_total = _display_value(_metric_value(eivoice_panel.get("droppedTotal")))
     eivoice_queue_summary = eivoice_panel.get("queueSummary") if isinstance(eivoice_panel.get("queueSummary"), Mapping) else {}
@@ -743,6 +747,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     .card {{ background: #fffaf0; border: 1px solid #d7cbb3; border-radius: 14px; padding: 16px; }}
     .label {{ color: #5c6b61; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }}
     .metric {{ display: block; margin-top: 4px; font-size: 22px; font-weight: 700; }}
+    .detail {{ display: block; margin-top: 8px; overflow-wrap: anywhere; }}
     code, pre {{ background: #10231a; color: #d9f3df; border-radius: 10px; }}
     code {{ padding: 1px 5px; }}
     pre {{ overflow: auto; padding: 14px; }}
@@ -821,6 +826,7 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Status</div><span class="metric">{voice_state}</span></div>
       <div class="card hot"><div class="label">听到内容</div><span class="metric">{voice_heard_text}</span></div>
       <div class="card hot"><div class="label">回答内容</div><span class="metric">{voice_reply_text}</span></div>
+      <div class="card hot"><div class="label">语音链路明细</div><span class="metric">链路状态：{voice_chain_state}</span><span class="detail">步骤：{voice_chain_steps}</span><span class="detail">最后 ASR：{voice_chain_asr}</span><span class="detail">最后 TTS：{voice_chain_tts}</span></div>
       <div class="card"><div class="label">对话引擎</div><span class="metric">{voice_dialogue_engine}</span></div>
       <div class="card"><div class="label">协议事件</div><span class="metric">{voice_protocol_event}</span></div>
       <div class="card"><div class="label">耗时拆分</div><span class="metric">{voice_latency_breakdown}</span></div>
@@ -1037,6 +1043,7 @@ def _render_lightweight_index(timestamp: float) -> str:
     <section class="grid">
       <div class="card"><div class="label">视觉证据</div><div class="rows" id="vision-evidence"></div></div>
       <div class="card"><div class="label">脖子证据</div><div class="rows" id="neck-evidence"></div></div>
+      <div class="card hot"><div class="label">语音链路明细</div><span class="metric" id="voice-chain-state">读取中</span><span class="hint" id="voice-chain-steps">/api/voice/realtime</span><div class="rows" id="voice-chain-evidence"></div></div>
       <div class="card"><div class="label">语音证据</div><div class="rows" id="voice-evidence"></div></div>
       <div class="card"><div class="label">运行证据</div><div class="rows" id="health-evidence"></div></div>
     </section>
@@ -1148,6 +1155,21 @@ def _render_lightweight_index(timestamp: float) -> str:
       if (audio.rms_dbfs !== undefined) parts.push(`rms=${{metric(audio.rms_dbfs, 'dBFS')}}`);
       return parts.length ? parts.join(' / ') : '未知';
     }}
+    function voiceChainStateSummary(chain) {{
+      if (!chain || Object.keys(chain).length === 0) return '未知';
+      const parts = [];
+      parts.push(text(chain.state_label || chain.state));
+      if (chain.wake_state) parts.push(`wake=${{chain.wake_state}}`);
+      if (chain.phase) parts.push(`phase=${{chain.phase}}`);
+      return parts.join(' / ');
+    }}
+    function voiceChainStepsSummary(chain) {{
+      const steps = (chain || {{}}).steps || [];
+      const parts = steps
+        .filter((step) => step && step.key)
+        .map((step) => `${{text(step.label || step.key)}} ${{metric(step.latency_ms, 'ms')}}`);
+      return parts.length ? parts.join(' / ') : '未知';
+    }}
     Promise.allSettled([
       loadJson('/health'),
       loadJson('/api/vision/realtime'),
@@ -1171,6 +1193,10 @@ def _render_lightweight_index(timestamp: float) -> str:
       setText('vision-hint', `${{text(vision.detections_summary, '无检测摘要')}}`);
       setText('neck-hint', `${{text(neck.readiness_message, '无 readiness 信息')}}`);
       setText('voice-hint', `${{voiceReadiness(voice)}}`);
+      const voiceChain = voice.voice_chain || {{}};
+      const voiceChainLatency = voiceChain.latency_ms || {{}};
+      setText('voice-chain-state', voiceChainStateSummary(voiceChain));
+      setText('voice-chain-steps', voiceChainStepsSummary(voiceChain));
       setRows('vision-evidence', [
         ['状态', vision.status],
         ['画面帧', first(vision.frame_id, (vision.overlay || {{}}).frame?.frame_id)],
@@ -1202,6 +1228,15 @@ def _render_lightweight_index(timestamp: float) -> str:
         ['首语音', metric(((voice.latency || {{}}).stage_latency_ms || {{}}).first_speech, 'ms')],
         ['性能优化', optimizationSummary(voice.optimization || {{}})],
         ['Readiness', voiceReadiness(voice)],
+      ]);
+      setRows('voice-chain-evidence', [
+        ['链路状态', voiceChainStateSummary(voiceChain)],
+        ['ASR 识别', metric(voiceChainLatency.listen_asr, 'ms')],
+        ['脑端回复', metric(voiceChainLatency.dialogue, 'ms')],
+        ['TTS 播放', metric(voiceChainLatency.speak, 'ms')],
+        ['总耗时', metric(voiceChainLatency.total, 'ms')],
+        ['最后 ASR', voiceChain.last_asr_text],
+        ['最后 TTS', voiceChain.last_tts_text],
       ]);
       setRows('health-evidence', [
         ['状态', health.status],
@@ -1525,6 +1560,56 @@ def _voice_latency_breakdown_summary(value: Any) -> str:
         if stage_latency.get(key) not in (None, "")
     ]
     return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_chain_state_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    parts = [str(value.get("state_label") or value.get("state") or "unknown")]
+    wake_state = value.get("wake_state")
+    phase = value.get("phase")
+    if wake_state:
+        parts.append(f"wake={wake_state}")
+    if phase:
+        parts.append(f"phase={phase}")
+    return " / ".join(parts)
+
+
+def _voice_chain_steps_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    steps = value.get("steps")
+    if isinstance(steps, (list, tuple)):
+        parts = [
+            f"{step.get('label') or step.get('key')} {_metric_value(step.get('latency_ms'), suffix='ms')}"
+            for step in steps
+            if isinstance(step, Mapping) and (step.get("label") or step.get("key"))
+        ]
+        if parts:
+            return " / ".join(parts)
+    latency = value.get("latency_ms")
+    if not isinstance(latency, Mapping):
+        return "unknown"
+    parts = [
+        f"{label} {_metric_value(latency.get(key), suffix='ms')}"
+        for key, label in (
+            ("listen_asr", "ASR 识别"),
+            ("dialogue", "脑端回复"),
+            ("speak", "TTS 播放"),
+            ("total", "总耗时"),
+        )
+        if latency.get(key) not in (None, "")
+    ]
+    return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_chain_text(value: Any, key: str) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    text = value.get(key)
+    if text in (None, ""):
+        return "unknown"
+    return str(text)
 
 
 def _voice_optimization_summary(value: Any) -> str:

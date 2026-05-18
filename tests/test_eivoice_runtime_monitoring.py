@@ -335,6 +335,50 @@ def test_voice_diagnostics_preserves_native_dialogue_evidence() -> None:
     assert payload["optimization"]["dialogue_engine"]["elapsed_ms"] == 202.1
 
 
+def test_voice_diagnostics_builds_human_voice_chain_payload() -> None:
+    class App:
+        def voice_status(self) -> dict[str, Any]:
+            return {
+                "status": "ready",
+                "wakeword": {"enabled": True, "state": "active"},
+                "voice_dialogue": {
+                    "enabled": True,
+                    "running": True,
+                    "phase": "speaking",
+                    "conversation_active": True,
+                    "last_transcript": "你好鸿途，看一下现在语音链路",
+                    "last_reply": "语音链路已经正常唤醒，正在播报结果。",
+                    "last_stage_latency_ms": {
+                        "listen_asr": 121.5,
+                        "dialogue": 345.75,
+                        "speak": 678.25,
+                        "total": 1145.5,
+                    },
+                },
+            }
+
+    payload = build_voice_diagnostics_from_app(App(), timestamp=5.0)
+
+    assert payload["voice_chain"]["state"] == "awake"
+    assert payload["voice_chain"]["state_label"] == "唤醒"
+    assert payload["voice_chain"]["wake_state"] == "active"
+    assert payload["voice_chain"]["conversation_active"] is True
+    assert payload["voice_chain"]["last_asr_text"] == "你好鸿途，看一下现在语音链路"
+    assert payload["voice_chain"]["last_tts_text"] == "语音链路已经正常唤醒，正在播报结果。"
+    assert payload["voice_chain"]["latency_ms"] == {
+        "listen_asr": 121.5,
+        "dialogue": 345.75,
+        "speak": 678.25,
+        "total": 1145.5,
+    }
+    assert payload["voice_chain"]["steps"] == [
+        {"key": "listen_asr", "label": "ASR 识别", "latency_ms": 121.5},
+        {"key": "dialogue", "label": "脑端回复", "latency_ms": 345.75},
+        {"key": "speak", "label": "TTS 播放", "latency_ms": 678.25},
+        {"key": "total", "label": "总耗时", "latency_ms": 1145.5},
+    ]
+
+
 def test_voice_diagnostics_uses_eivoice_runtime_when_voice_status_returns_none() -> None:
     class App:
         def voice_status(self) -> None:
@@ -516,6 +560,13 @@ def test_web_voice_realtime_reports_attached_native_runtime_as_live() -> None:
     assert "对话引擎" in body
     assert "协议事件" in body
     assert "耗时拆分" in body
+    assert "语音链路明细" in body
+    assert "链路状态" in body
+    assert "ASR 识别 1033.08ms" in body
+    assert "脑端回复 710.51ms" in body
+    assert "TTS 播放 4889.2ms" in body
+    assert "最后 ASR" in body
+    assert "最后 TTS" in body
     assert "性能优化" in body
     assert "TTS 播放" in body
     assert "从头你每天早上九点不是要给我发新闻吗" in body
