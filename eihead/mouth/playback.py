@@ -17,7 +17,7 @@ from typing import Any
 
 
 PRIMARY_TTS_PROVIDER = "minimax"
-FALLBACK_TTS_PROVIDERS = {"noop", "espeak"}
+FALLBACK_TTS_PROVIDERS = {"noop", "piper"}
 BUSY_STATUSES = {"synthesizing", "playing"}
 
 

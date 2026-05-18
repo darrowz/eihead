@@ -5,6 +5,10 @@ REPO_DIR="${REPO_DIR:-/dev-project/eihead}"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/eihead}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 EIPROTOCOL_DIR="${EIPROTOCOL_DIR:-}"
+PIPER_MODEL_DIR="${PIPER_MODEL_DIR:-/var/lib/eihead/models/piper}"
+PIPER_MODEL_NAME="${PIPER_MODEL_NAME:-zh_CN-huayan-medium}"
+PIPER_MODEL_BASE_URL="${PIPER_MODEL_BASE_URL:-https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium}"
+INSTALL_PIPER_MODEL="${INSTALL_PIPER_MODEL:-auto}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse --short HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
@@ -45,6 +49,26 @@ fi
 "$RELEASE_DIR/.venv/bin/python" -m pip install "$RELEASE_DIR"
 
 mkdir -p /opt/eihead /var/lib/eihead /var/log/eihead
+if [ "$INSTALL_PIPER_MODEL" != "0" ] && [ "$INSTALL_PIPER_MODEL" != "false" ]; then
+  mkdir -p "$PIPER_MODEL_DIR"
+  for suffix in onnx onnx.json; do
+    target="$PIPER_MODEL_DIR/$PIPER_MODEL_NAME.$suffix"
+    if [ ! -s "$target" ]; then
+      url="$PIPER_MODEL_BASE_URL/$PIPER_MODEL_NAME.$suffix"
+      tmp="$target.tmp"
+      if command -v curl >/dev/null 2>&1; then
+        curl -fL "$url" -o "$tmp"
+      elif command -v wget >/dev/null 2>&1; then
+        wget -O "$tmp" "$url"
+      else
+        echo "Neither curl nor wget is available to download Piper model: $url" >&2
+        exit 2
+      fi
+      mv "$tmp" "$target"
+    fi
+  done
+fi
+
 sudo mkdir -p /etc/eihead
 if [ -f "$RELEASE_DIR/config/eihead.honjia.yaml" ]; then
   if sudo test -f /etc/eihead/eihead.honjia.yaml && ! sudo cmp -s "$RELEASE_DIR/config/eihead.honjia.yaml" /etc/eihead/eihead.honjia.yaml; then

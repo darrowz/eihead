@@ -559,9 +559,8 @@ def test_from_config_path_exposes_degraded_voice_diagnostics_from_honjia_config(
                 "      enabled: true",
                 "      provider: minimax",
                 "      model: speech-2.8-hd",
-                "      command: espeak-ng",
-                "      voice: zh",
-                "      rate_wpm: 135",
+                "      fallback_provider: piper",
+                "      piper_model_path: /models/piper/zh_CN-huayan-medium.onnx",
             ]
         ),
         encoding="utf-8",
@@ -614,9 +613,10 @@ def test_native_voice_loop_config_reads_honjia_audio_devices_and_lstm_model_type
                 "      voice_id: female-shaonv",
                 "      audio_format: wav",
                 "      sample_rate: 32000",
-                "      command: espeak-ng",
-                "      voice: zh",
-                "      rate_wpm: 135",
+                "      fallback_provider: piper",
+                "      piper_command: /usr/local/bin/piper",
+                "      piper_model_path: /models/piper/zh_CN-huayan-medium.onnx",
+                "      piper_config_path: /models/piper/zh_CN-huayan-medium.onnx.json",
                 "      playback_echo_cooldown_ms: 1200",
                 "    dialogue:",
                 "      enabled: true",
@@ -654,9 +654,10 @@ def test_native_voice_loop_config_reads_honjia_audio_devices_and_lstm_model_type
     assert loop_config.asr_model_dir == "/home/darrow/eibrain/models/asr/sherpa-onnx-streaming"
     assert loop_config.asr_model_type == "lstm"
     assert loop_config.tts_backend == "minimax"
-    assert loop_config.tts_command == "espeak-ng"
-    assert loop_config.tts_voice == "zh"
-    assert loop_config.tts_rate_wpm == 135
+    assert loop_config.tts_fallback_provider == "piper"
+    assert loop_config.piper_command == "/usr/local/bin/piper"
+    assert loop_config.piper_model_path == "/models/piper/zh_CN-huayan-medium.onnx"
+    assert loop_config.piper_config_path == "/models/piper/zh_CN-huayan-medium.onnx.json"
     assert loop_config.playback_echo_cooldown_ms == 1200
     assert loop_config.minimax_api_key == "secret-minimax"
     assert loop_config.minimax_api_base_url == "https://api.minimaxi.com"

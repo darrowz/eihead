@@ -121,6 +121,17 @@ class FakeMiniMaxSynthesizer:
         }
 
 
+class FailingMiniMaxSynthesizer:
+    def synthesize(self, text: str) -> dict[str, object]:
+        return {
+            "status": "error",
+            "details": {
+                "backend": "minimax",
+                "reason": "request_failed",
+            },
+        }
+
+
 class FakeDialogueClient:
     def __init__(self, reply: str = "我是 eibrain。") -> None:
         self.reply = reply
@@ -386,7 +397,53 @@ def test_native_voice_speak_prefers_minimax_tts_when_configured() -> None:
     assert outcome["details"]["voice_id"] == "female-shaonv"
 
 
-def test_native_voice_speak_uses_chinese_espeak_voice_and_stops_capture() -> None:
+def test_native_voice_speak_uses_piper_when_minimax_fails() -> None:
+    from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
+
+    commands: list[list[str]] = []
+    inputs: list[str | None] = []
+    capture_source = StoppableCaptureSource()
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        inputs.append(kwargs.get("input") if isinstance(kwargs.get("input"), str) else None)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    loop = NativeVoiceInteractionLoop(
+        NativeVoiceLoopConfig(
+            speaker_device="plughw:CARD=SPA3700,DEV=0",
+            tts_backend="minimax",
+            piper_command="/usr/local/bin/piper",
+            piper_model_path="/models/piper/zh_CN-huayan-medium.onnx",
+            piper_config_path="/models/piper/zh_CN-huayan-medium.onnx.json",
+            playback_echo_cooldown_ms=0,
+        ),
+        capture_source=capture_source,  # type: ignore[arg-type]
+        transcriber=StubTranscriber(),  # type: ignore[arg-type]
+        runner=runner,
+        tts_synthesizer=FailingMiniMaxSynthesizer(),
+    )
+
+    outcome = loop.speak("本地派珀兜底播报。")
+
+    assert outcome["status"] == "ok"
+    assert commands[0][:5] == [
+        "/usr/local/bin/piper",
+        "--model",
+        "/models/piper/zh_CN-huayan-medium.onnx",
+        "--config",
+        "/models/piper/zh_CN-huayan-medium.onnx.json",
+    ]
+    assert "--output_file" in commands[0]
+    assert inputs[0] == "本地派珀兜底播报。"
+    assert commands[1][:4] == ["aplay", "-q", "-D", "plughw:CARD=SPA3700,DEV=0"]
+    assert len(commands) == 2
+    assert outcome["details"]["backend"] == "piper"
+    assert outcome["details"]["fallback_from"] == "minimax"
+    assert outcome["details"]["primary_error"]["reason"] == "request_failed"
+
+
+def test_native_voice_speak_reports_error_without_secondary_fallback_when_piper_fails() -> None:
     from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
 
     commands: list[list[str]] = []
@@ -394,29 +451,33 @@ def test_native_voice_speak_uses_chinese_espeak_voice_and_stops_capture() -> Non
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
+        if command[0] == "/usr/local/bin/piper":
+            return subprocess.CompletedProcess(command, 1, "", "piper model missing")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     loop = NativeVoiceInteractionLoop(
         NativeVoiceLoopConfig(
             speaker_device="plughw:CARD=SPA3700,DEV=0",
-            tts_command="espeak-ng",
-            tts_voice="cmn",
-            tts_rate_wpm=150,
+            tts_backend="minimax",
+            piper_command="/usr/local/bin/piper",
+            piper_model_path="/models/piper/zh_CN-huayan-medium.onnx",
             playback_echo_cooldown_ms=0,
         ),
         capture_source=capture_source,  # type: ignore[arg-type]
         transcriber=StubTranscriber(),  # type: ignore[arg-type]
         runner=runner,
+        tts_synthesizer=FailingMiniMaxSynthesizer(),
     )
 
-    outcome = loop.speak("我听到了：你好鸿佳")
+    outcome = loop.speak("派珀不可用时仍然要有声音。")
 
-    assert outcome["status"] == "ok"
-    assert capture_source.stop_calls == 1
-    assert commands[0][:5] == ["espeak-ng", "-v", "cmn", "-s", "150"]
-    assert commands[1][:4] == ["aplay", "-q", "-D", "plughw:CARD=SPA3700,DEV=0"]
-    assert outcome["details"]["command"] == "espeak-ng"
-    assert outcome["details"]["voice"] == "cmn"
+    assert outcome["status"] == "error"
+    assert outcome["success"] is False
+    assert commands[0][0] == "/usr/local/bin/piper"
+    assert len(commands) == 1
+    assert outcome["details"]["backend"] == "piper"
+    assert outcome["details"]["fallback_from"] == "minimax"
+    assert outcome["details"]["primary_error"]["reason"] == "request_failed"
 
 
 def test_runner_step_methods_move_audio_through_worker_queues() -> None:

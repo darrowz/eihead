@@ -76,9 +76,10 @@ capabilities:
       voice_id: female-shaonv
       audio_format: wav
       sample_rate: 32000
-      command: espeak-ng
-      voice: zh
-      rate_wpm: 135
+      fallback_provider: piper
+      piper_command: /usr/local/bin/piper
+      piper_model_path: /var/lib/eihead/models/piper/zh_CN-huayan-medium.onnx
+      piper_config_path: /var/lib/eihead/models/piper/zh_CN-huayan-medium.onnx.json
       playback_echo_cooldown_ms: 1200
       limits:
         streaming: false

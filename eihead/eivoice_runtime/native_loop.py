@@ -51,10 +51,11 @@ class NativeVoiceLoopConfig:
     wake_ack_text: str = "我在。"
     end_ack_text: str = "好的，结束对话。"
     playback_backend: str = "aplay"
-    tts_backend: str = "espeak-ng"
-    tts_command: str = "espeak-ng"
-    tts_voice: str = "cmn"
-    tts_rate_wpm: int = 150
+    tts_backend: str = "piper"
+    tts_fallback_provider: str = ""
+    piper_command: str = "piper"
+    piper_model_path: str = ""
+    piper_config_path: str = ""
     playback_echo_cooldown_ms: int = 350
     minimax_api_key: str = ""
     minimax_api_base_url: str = "https://api.minimaxi.com"
@@ -828,13 +829,34 @@ class NativeVoiceInteractionLoop:
                 minimax = self._play_minimax_text(text, started=started)
                 if minimax.get("success"):
                     return minimax
-                fallback = self._play_espeak_text(text, started=time.perf_counter())
+                fallback = self._play_configured_tts_fallback(text, started=time.perf_counter())
+                if fallback is None:
+                    primary_error = _mapping(minimax.get("details"))
+                    return {
+                        "status": "error",
+                        "success": False,
+                        "details": {
+                            **primary_error,
+                            "fallback_from": "minimax",
+                            "fallback_provider": self.config.tts_fallback_provider,
+                            "fallback_reason": "tts_fallback_not_configured",
+                        },
+                    }
                 fallback_details = _mapping(fallback.get("details"))
                 fallback_details["fallback_from"] = "minimax"
                 fallback_details["primary_error"] = _mapping(minimax.get("details"))
                 fallback["details"] = fallback_details
                 return fallback
-            return self._play_espeak_text(text, started=started)
+            if self.config.tts_backend == "piper":
+                return self._play_piper_text(text, started=started)
+            return {
+                "status": "error",
+                "success": False,
+                "details": {
+                    "backend": self.config.tts_backend,
+                    "reason": "unsupported_tts_backend",
+                },
+            }
         finally:
             cooldown_s = max(0.0, float(self.config.playback_echo_cooldown_ms) / 1000.0)
             if cooldown_s:
@@ -846,6 +868,21 @@ class NativeVoiceInteractionLoop:
                 self._state.silence_after_voice_ms = 0
                 self._state.captured_ms = 0
                 self._state.current_round_id = ""
+
+    def _play_configured_tts_fallback(self, text: str, *, started: float) -> dict[str, Any] | None:
+        fallback_provider = self.config.tts_fallback_provider.strip().lower()
+        if fallback_provider == "piper" or (not fallback_provider and self.config.piper_model_path):
+            return self._play_piper_text(text, started=started)
+        if fallback_provider:
+            return {
+                "status": "error",
+                "success": False,
+                "details": {
+                    "backend": fallback_provider,
+                    "reason": "unsupported_tts_fallback_provider",
+                },
+            }
+        return None
 
     def _play_minimax_text(self, text: str, *, started: float) -> dict[str, Any]:
         synthesizer = self.tts_synthesizer
@@ -899,22 +936,32 @@ class NativeVoiceInteractionLoop:
         finally:
             wav_path.unlink(missing_ok=True)
 
-    def _play_espeak_text(self, text: str, *, started: float) -> dict[str, Any]:
+    def _play_piper_text(self, text: str, *, started: float) -> dict[str, Any]:
+        model_path = self.config.piper_model_path.strip()
+        if not model_path:
+            return {
+                "status": "error",
+                "success": False,
+                "details": {
+                    "backend": "piper",
+                    "reason": "missing_piper_model_path",
+                },
+            }
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             wav_path = Path(handle.name)
+        command = [
+            self.config.piper_command,
+            "--model",
+            model_path,
+        ]
+        config_path = self.config.piper_config_path.strip()
+        if config_path:
+            command.extend(["--config", config_path])
+        command.extend(["--output_file", str(wav_path)])
         try:
             synth = self.runner(
-                [
-                    self.config.tts_command,
-                    "-v",
-                    self.config.tts_voice,
-                    "-s",
-                    str(self.config.tts_rate_wpm),
-                    "-w",
-                    str(wav_path),
-                    "--",
-                    text,
-                ],
+                command,
+                input=text,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -924,8 +971,12 @@ class NativeVoiceInteractionLoop:
                     "status": "error",
                     "success": False,
                     "details": {
-                        "backend": self.config.tts_command,
+                        "backend": "piper",
                         "reason": "synthesis_failed",
+                        "command": self.config.piper_command,
+                        "model_path": model_path,
+                        "config_path": config_path,
+                        "returncode": synth.returncode,
                         "stderr": (synth.stderr or "").strip(),
                     },
                 }
@@ -940,9 +991,10 @@ class NativeVoiceInteractionLoop:
                 "status": "ok" if playback.returncode == 0 else "error",
                 "success": playback.returncode == 0,
                 "details": {
-                    "backend": self.config.tts_command,
-                    "command": self.config.tts_command,
-                    "voice": self.config.tts_voice,
+                    "backend": "piper",
+                    "command": self.config.piper_command,
+                    "model_path": model_path,
+                    "config_path": config_path,
                     "playback_backend": self.config.playback_backend,
                     "device": self.config.speaker_device,
                     "text_preview": text[:60],
@@ -1040,8 +1092,15 @@ class NativeVoiceInteractionLoop:
         }
 
     def _mouth_status(self, state: _LoopState) -> dict[str, Any]:
-        model = self.config.minimax_model if self.config.tts_backend == "minimax" else self.config.tts_backend
-        voice_id = self.config.minimax_voice_id if self.config.tts_backend == "minimax" else self.config.tts_voice
+        if self.config.tts_backend == "minimax":
+            model = self.config.minimax_model
+            voice_id = self.config.minimax_voice_id
+        elif self.config.tts_backend == "piper":
+            model = Path(self.config.piper_model_path).name if self.config.piper_model_path else "piper"
+            voice_id = ""
+        else:
+            model = self.config.tts_backend
+            voice_id = ""
         return {
             "status": "idle" if state.phase != "speaking" else "playing",
             "backend": self.config.tts_backend,
@@ -1058,6 +1117,8 @@ class NativeVoiceInteractionLoop:
                     "provider": self.config.tts_backend,
                     "model": model,
                     "voice_id": voice_id,
+                    "fallback_provider": self.config.tts_fallback_provider,
+                    "piper_model_path": self.config.piper_model_path,
                     "device": self.config.speaker_device,
                 },
             },

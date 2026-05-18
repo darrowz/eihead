@@ -154,13 +154,13 @@ def test_status_and_summaries_are_json_friendly_and_exported_from_package() -> N
     assert build_mouth_status is playback.build_mouth_status
 
     status = playback.build_mouth_status(
-        config=playback.MouthTtsConfig(provider="espeak", model="espeak-ng", voice_id="zh"),
+        config=playback.MouthTtsConfig(provider="piper", model="zh_CN-huayan-medium", voice_id="huayan"),
         status="completed",
         details={"text_preview": "播报结束", "text_char_count": 4},
     )
     payload = status.to_dict()
 
-    assert payload["provider"] == "espeak"
+    assert payload["provider"] == "piper"
     assert payload["health"] == "degraded"
     assert payload["data_status"] == "compat"
     assert json.loads(json.dumps(payload, ensure_ascii=False))["status"] == "completed"

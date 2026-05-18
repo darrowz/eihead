@@ -57,6 +57,7 @@ def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopC
     microphone_limits = _mapping(microphone.get("limits"))
     tts_provider = _text(getattr(tts, "provider", ""), "")
     minimax_backend = tts_provider.lower() == "minimax"
+    piper_backend = tts_provider.lower() == "piper"
     dialogue_provider = _text(getattr(dialogue, "provider", ""), "template")
 
     return NativeVoiceLoopConfig(
@@ -94,10 +95,33 @@ def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopC
         end_phrases=_tuple_text(dialogue_extra.get("end_phrases") or dialogue_extra.get("endPhrases")) or ("结束对话",),
         wake_ack_text=_text(dialogue_extra.get("wake_ack_text") or dialogue_extra.get("wakeAckText"), "我在。"),
         end_ack_text=_text(dialogue_extra.get("end_ack_text") or dialogue_extra.get("endAckText"), "好的，结束对话。"),
-        tts_backend="minimax" if minimax_backend else "espeak-ng",
-        tts_command=_text(tts_extra.get("command") or tts_extra.get("tts_command") or tts_extra.get("ttsCommand"), "espeak-ng"),
-        tts_voice=_text(tts_extra.get("fallback_voice") or tts_extra.get("voice") or tts_extra.get("tts_voice") or tts_extra.get("ttsVoice"), "cmn"),
-        tts_rate_wpm=_int(tts_extra.get("rate_wpm") or tts_extra.get("rateWpm"), 150),
+        tts_backend="minimax" if minimax_backend else ("piper" if piper_backend else tts_provider),
+        tts_fallback_provider=_text(
+            tts_extra.get("fallback_provider")
+            or tts_extra.get("fallbackProvider")
+            or os.environ.get("EIHEAD_TTS_FALLBACK_PROVIDER"),
+            "",
+        ),
+        piper_command=_text(
+            tts_extra.get("piper_command")
+            or tts_extra.get("piperCommand")
+            or os.environ.get("EIHEAD_PIPER_COMMAND"),
+            "piper",
+        ),
+        piper_model_path=_text(
+            tts_extra.get("piper_model_path")
+            or tts_extra.get("piperModelPath")
+            or os.environ.get("EIHEAD_PIPER_MODEL_PATH")
+            or os.environ.get("PIPER_MODEL_PATH"),
+            "",
+        ),
+        piper_config_path=_text(
+            tts_extra.get("piper_config_path")
+            or tts_extra.get("piperConfigPath")
+            or os.environ.get("EIHEAD_PIPER_CONFIG_PATH")
+            or os.environ.get("PIPER_CONFIG_PATH"),
+            "",
+        ),
         playback_backend="aplay",
         playback_echo_cooldown_ms=_int(
             tts_extra.get("playback_echo_cooldown_ms")
