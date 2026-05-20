@@ -215,6 +215,42 @@ def test_transport_status_is_exposed_and_degrades_on_reconnect_errors() -> None:
     assert "transport error: TimeoutError heartbeat" in panel["warnings"]
 
 
+def test_openclaw_ws_status_is_exposed_in_runtime_panel() -> None:
+    panel = build_eivoice_runtime_panel(
+        {
+            "state": "running",
+            "audio_frontend": {
+                "aec": {"enabled": True, "available": True},
+                "ns": {"enabled": True, "available": True},
+                "vad": {"enabled": True, "available": True},
+                "loopback": {"enabled": True, "available": True},
+            },
+            "transport": {
+                "transport": "openclaw_realtime",
+                "state": "connected",
+                "url": "wss://openclaw.example/ws",
+            },
+            "openclaw_ws": {
+                "connected": True,
+                "url": "wss://openclaw.example/ws",
+                "last_error": "",
+                "last_rx_ms": 18,
+                "last_tx_ms": 9,
+                "session_state": "streaming",
+            },
+        }
+    )
+
+    assert panel["openclawWs"] == {
+        "connected": True,
+        "url": "wss://openclaw.example/ws",
+        "lastError": "",
+        "lastRxMs": 18,
+        "lastTxMs": 9,
+        "sessionState": "streaming",
+    }
+
+
 def test_voice_diagnostics_uses_tts_playback_as_mouth_authority() -> None:
     class App:
         def voice_status(self) -> dict[str, Any]:
@@ -577,3 +613,64 @@ def test_web_voice_realtime_reports_attached_native_runtime_as_live() -> None:
     assert payload["optimization"]["latency_ms"]["speak"] == 4889.2
     assert payload["optimization"]["bottleneck"]["stage"] == "speak"
     assert payload["optimization"]["realtime_audio"]["audio_level"] == 0.02
+
+
+def test_web_voice_realtime_shows_openclaw_ws_status() -> None:
+    class App(RuntimePanelApp):
+        def voice_status(self) -> dict[str, Any]:
+            return {
+                "status": "degraded",
+                "ear": {"status": "ready", "capture": {"status": "ready", "details": {"device": "plughw:CARD=U4K,DEV=0"}}},
+                "mouth": {"status": "ready", "tts_playback": {"status": "ready", "details": {"device": "plughw:CARD=SPA3700,DEV=0"}}},
+                "voice_dialogue": {"enabled": True, "running": False, "phase": "connecting"},
+                "realtime_audio": {"enabled": True, "running": False},
+                "openclaw_ws": {
+                    "connected": False,
+                    "url": "wss://openclaw.example/ws",
+                    "last_error": "auth_failed",
+                    "last_rx_ms": None,
+                    "last_tx_ms": 44,
+                    "session_state": "auth_failed",
+                },
+                "readiness_message": "openclaw realtime provider selected",
+            }
+
+        def eivoice_runtime_status(self) -> dict[str, Any]:
+            return {
+                "state": "degraded",
+                "conversation_state": "connecting",
+                "audio_frontend": {
+                    "aec": {"enabled": True, "available": True},
+                    "ns": {"enabled": True, "available": True},
+                    "vad": {"enabled": True, "available": True},
+                    "loopback": {"enabled": True, "available": True},
+                },
+                "transport": {
+                    "transport": "openclaw_realtime",
+                    "state": "error",
+                    "url": "wss://openclaw.example/ws",
+                },
+                "openclaw_ws": {
+                    "connected": False,
+                    "url": "wss://openclaw.example/ws",
+                    "last_error": "auth_failed",
+                    "last_rx_ms": None,
+                    "last_tx_ms": 44,
+                    "session_state": "auth_failed",
+                },
+            }
+
+    with running_server(App()) as base_url:
+        body = read_text(f"{base_url}/")
+        payload = read_json(f"{base_url}/api/voice/realtime")
+
+    assert payload["openclaw_ws"] == {
+        "connected": False,
+        "url": "wss://openclaw.example/ws",
+        "last_error": "auth_failed",
+        "last_rx_ms": None,
+        "last_tx_ms": 44,
+        "session_state": "auth_failed",
+    }
+    assert "wss://openclaw.example/ws" in body
+    assert "auth_failed" in body

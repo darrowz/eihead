@@ -41,6 +41,7 @@ from .runtime import (
     WsReceiveSource,
 )
 from .transport import FakeWebSocketTransport, InMemoryVoiceStreamTransport, VoiceStreamTransport
+from .openclaw_transport import OpenClawRealtimeTransport
 from .tts import (
     SimulatedStreamingTtsProvider,
     StreamingTtsAudioChunk,
@@ -67,6 +68,7 @@ __all__ = [
     "LoopbackReferenceBuffer",
     "LoopbackReferenceMatch",
     "NoOpAcousticFrontend",
+    "OpenClawRealtimeTransport",
     "OpusCodec",
     "PassthroughOpusCodec",
     "PlaybackSink",

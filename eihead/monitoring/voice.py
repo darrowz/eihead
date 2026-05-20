@@ -98,6 +98,10 @@ def _build_voice_payload(
     latency = _latency_payload(data, dialogue_source)
     _merge_component_latency(latency, ear=ear, mouth=mouth)
     streaming = _streaming_payload(data, dialogue_source, realtime_session)
+    openclaw_ws = _openclaw_ws_payload(data, dialogue_source, streaming=streaming, realtime_audio=realtime_audio)
+    if openclaw_ws:
+        realtime_audio = {**realtime_audio, "openclaw_ws": dict(openclaw_ws)}
+        streaming = {**streaming, "openclaw_ws": dict(openclaw_ws)}
     realtime_events = _realtime_events_payload(data, dialogue_source, realtime_session)
     event_count = _event_count_payload(data, dialogue_source, realtime_session, realtime_events)
     closed_loop_state = _closed_loop_state_payload(data, dialogue_source, realtime_session)
@@ -159,6 +163,7 @@ def _build_voice_payload(
         "mouth": mouth,
         "dialogue": dialogue,
         "realtime_audio": realtime_audio,
+        "openclaw_ws": openclaw_ws,
         "round": round_info,
         "scheduler": scheduler,
         "lanes": cognition["lanes"],
@@ -248,6 +253,7 @@ def _voice_payload_from_eivoice_runtime(status: Mapping[str, Any]) -> dict[str, 
     panel = build_eivoice_runtime_panel(dict(runtime))
     audio_frontend = _json_mapping(panel.get("audioFrontend")) or {}
     transport = _json_mapping(panel.get("transport")) or {}
+    openclaw_ws_panel = _json_mapping(panel.get("openclawWs")) or {}
     warnings = [str(item) for item in panel.get("warnings", []) if item]
     asr_raw = runtime.get("asr") or runtime.get("asr_status") or runtime.get("recognition")
     asr = _json_mapping(asr_raw) if isinstance(asr_raw, Mapping) else {}
@@ -272,10 +278,20 @@ def _voice_payload_from_eivoice_runtime(status: Mapping[str, Any]) -> dict[str, 
         readiness_messages.append("mouth playback diagnostics are missing")
     runtime_running = bool(runtime.get("running")) or panel.get("state") in {"running", "conversation"}
     transport_state = _first_text(transport.get("state"))
+    openclaw_connected = bool(openclaw_ws_panel.get("connected"))
     realtime_audio_running = (
-        transport_state == "connected"
+        openclaw_connected
+        or transport_state == "connected"
         or (runtime_running and transport_state in {"", "unknown"})
     )
+    openclaw_ws = {
+        "connected": openclaw_connected,
+        "url": _first_text(openclaw_ws_panel.get("url")),
+        "last_error": _first_text(openclaw_ws_panel.get("lastError")),
+        "last_rx_ms": _float_or_none(openclaw_ws_panel.get("lastRxMs")),
+        "last_tx_ms": _float_or_none(openclaw_ws_panel.get("lastTxMs")),
+        "session_state": _first_text(openclaw_ws_panel.get("sessionState"), "unknown"),
+    }
     return {
         "eivoice_runtime": {
             "state": panel.get("state"),
@@ -284,6 +300,7 @@ def _voice_payload_from_eivoice_runtime(status: Mapping[str, Any]) -> dict[str, 
             "warnings": warnings,
             "queues": panel.get("queues"),
             "transport": transport,
+            "openclaw_ws": openclaw_ws,
             "audio_frontend": audio_frontend,
         },
         "ear": {
@@ -318,11 +335,14 @@ def _voice_payload_from_eivoice_runtime(status: Mapping[str, Any]) -> dict[str, 
             "enabled": True,
             "running": realtime_audio_running,
             "transport": transport,
+            "openclaw_ws": openclaw_ws,
         },
         "streaming": {
             "state": "running" if transport.get("state") == "connected" else transport.get("state"),
             "transport": transport,
+            "openclaw_ws": openclaw_ws,
         },
+        "openclaw_ws": openclaw_ws,
         "readiness_message": "; ".join(readiness_messages),
     }
 
@@ -1397,6 +1417,36 @@ def _voice_chain_payload(
                 ("total", "总耗时"),
             )
         ],
+    }
+
+
+def _openclaw_ws_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    *,
+    streaming: Mapping[str, Any] | None,
+    realtime_audio: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    explicit = _first_mapping(
+        data,
+        dialogue,
+        realtime_audio,
+        streaming,
+        keys=("openclaw_ws", "openclawWs"),
+    )
+    if explicit is None:
+        runtime = _first_mapping(data, keys=("eivoice_runtime", "eivoiceRuntime"))
+        if runtime is not None:
+            explicit = _first_mapping(runtime, keys=("openclaw_ws", "openclawWs"))
+    if explicit is None:
+        return {}
+    return {
+        "connected": _truthy(_first_value(explicit, "connected")),
+        "url": _first_text(_first_value(explicit, "url")),
+        "last_error": _first_text(_first_value(explicit, "last_error", "lastError")),
+        "last_rx_ms": _float_or_none(_first_value(explicit, "last_rx_ms", "lastRxMs")),
+        "last_tx_ms": _float_or_none(_first_value(explicit, "last_tx_ms", "lastTxMs")),
+        "session_state": _first_text(_first_value(explicit, "session_state", "sessionState")),
     }
 
 

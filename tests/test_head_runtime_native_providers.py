@@ -737,3 +737,48 @@ def test_from_config_path_attaches_native_voice_runtime_from_honjia_config(tmp_p
     assert voice_runtime.started == 1
     assert runtime.voice_status()["voice_dialogue"]["running"] is True
     assert runtime.eivoice_runtime_status()["state"] == "running"
+
+
+def test_native_voice_runtime_can_select_openclaw_realtime_provider(tmp_path: Path) -> None:
+    config_path = tmp_path / "eihead.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia",
+                "devices:",
+                "  microphone:",
+                "    device: plughw:CARD=U4K,DEV=0",
+                "  speaker:",
+                "    device: plughw:CARD=SPA3700,DEV=0",
+                "capabilities:",
+                "  software:",
+                "    dialogue:",
+                "      enabled: true",
+                "      provider: openclaw_realtime",
+                "      transport_provider: openclaw_realtime",
+                "      ws_url: wss://openclaw.example/ws",
+                "      fallback_transport_provider: legacy_native",
+                "      session_id: honjia-voice",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_eihead_config(config_path)
+    loop_config = native_voice_loop_config_from_eihead_config(config)
+    runtime = build_native_voice_runtime(config)
+
+    assert loop_config.transport_provider == "openclaw_realtime"
+    assert loop_config.openclaw_ws_url == "wss://openclaw.example/ws"
+    assert loop_config.fallback_transport_provider == "legacy_native"
+    assert runtime is not None
+
+    status = runtime.status()
+
+    assert status["transport"]["transport"] == "openclaw_realtime"
+    assert status["openclaw_ws"]["connected"] is False
+    assert status["openclaw_ws"]["url"] == "wss://openclaw.example/ws"
+    assert status["openclaw_ws"]["last_error"] == ""
+    assert status["openclaw_ws"]["last_rx_ms"] is None
+    assert status["openclaw_ws"]["last_tx_ms"] is None
+    assert status["openclaw_ws"]["session_state"] == "idle"

@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 from eihead.devices.neck_servo import build_neck_servo_adapter
 from eihead.eivoice_runtime.native_loop import NativeVoiceInteractionLoop, NativeVoiceLoopConfig
 from eihead.eye import GStreamerHailoRealtimeConfig, RealtimeEyeService
+from .openclaw_runtime import OpenClawRealtimeRuntime
 
 
 EyeAdapterFactory = Callable[[GStreamerHailoRealtimeConfig], Any]
@@ -37,9 +38,14 @@ def build_native_provider_services(
 
 
 def build_native_voice_runtime(config: Any | None) -> NativeVoiceInteractionLoop | None:
-    if not _is_honjia_config(config) or not _voice_realtime_enabled(config):
+    if not _is_honjia_config(config):
         return None
-    return NativeVoiceInteractionLoop(native_voice_loop_config_from_eihead_config(config))
+    loop_config = native_voice_loop_config_from_eihead_config(config)
+    if loop_config.transport_provider == "openclaw_realtime":
+        return OpenClawRealtimeRuntime(loop_config)
+    if not _voice_realtime_enabled(config):
+        return None
+    return NativeVoiceInteractionLoop(loop_config)
 
 
 def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopConfig:
@@ -54,14 +60,94 @@ def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopC
     asr_extra = _mapping(getattr(asr, "extra", None))
     tts_extra = _mapping(getattr(tts, "extra", None))
     dialogue_extra = _mapping(getattr(dialogue, "extra", None))
+    dialogue_limits = _mapping(getattr(dialogue, "limits", None))
     microphone_limits = _mapping(microphone.get("limits"))
     tts_provider = _text(getattr(tts, "provider", ""), "")
     minimax_backend = tts_provider.lower() == "minimax"
     piper_backend = tts_provider.lower() == "piper"
     dialogue_provider = _text(getattr(dialogue, "provider", ""), "template")
+    transport_provider = _normalize_transport_provider(
+        dialogue_extra.get("transport_provider")
+        or dialogue_extra.get("transportProvider")
+        or dialogue_limits.get("transport_provider")
+        or dialogue_limits.get("transportProvider")
+        or (
+            dialogue_provider
+            if dialogue_provider == "openclaw_realtime"
+            else dialogue_limits.get("transport")
+        )
+        or os.environ.get("EIHEAD_VOICE_TRANSPORT_PROVIDER")
+    )
+    fallback_transport_provider = _normalize_transport_provider(
+        dialogue_extra.get("fallback_transport_provider")
+        or dialogue_extra.get("fallbackTransportProvider")
+        or os.environ.get("EIHEAD_VOICE_FALLBACK_PROVIDER")
+        or "legacy_native"
+    )
 
     return NativeVoiceLoopConfig(
         enabled=True,
+        transport_provider=transport_provider,
+        fallback_transport_provider=fallback_transport_provider,
+        openclaw_ws_url=_text(
+            dialogue_extra.get("ws_url")
+            or dialogue_extra.get("wsUrl")
+            or dialogue_extra.get("openclaw_ws_url")
+            or dialogue_extra.get("openclawWsUrl")
+            or os.environ.get("EIHEAD_OPENCLAW_WS_URL"),
+            "",
+        ),
+        openclaw_token_env_var=_text(
+            dialogue_extra.get("token_env_var")
+            or dialogue_extra.get("tokenEnvVar")
+            or os.environ.get("EIHEAD_OPENCLAW_TOKEN_ENV_VAR"),
+            "OPENCLAW_REALTIME_TOKEN",
+        ),
+        openclaw_model=_text(
+            dialogue_extra.get("model")
+            or dialogue_extra.get("openclaw_model")
+            or dialogue_extra.get("openclawModel")
+            or os.environ.get("EIHEAD_OPENCLAW_MODEL"),
+            "",
+        ),
+        openclaw_voice=_text(
+            dialogue_extra.get("voice")
+            or dialogue_extra.get("openclaw_voice")
+            or dialogue_extra.get("openclawVoice")
+            or os.environ.get("EIHEAD_OPENCLAW_VOICE"),
+            "Zephyr",
+        ),
+        openclaw_brain_agent=_text(
+            dialogue_extra.get("brain_agent")
+            or dialogue_extra.get("brainAgent")
+            or os.environ.get("EIHEAD_OPENCLAW_BRAIN_AGENT"),
+            "enabled",
+        ),
+        openclaw_protocol=_text(
+            dialogue_extra.get("protocol")
+            or dialogue_extra.get("ws_protocol")
+            or dialogue_extra.get("wsProtocol")
+            or os.environ.get("EIHEAD_OPENCLAW_WS_PROTOCOL"),
+            "openclaw.realtime.v1",
+        ),
+        openclaw_connect_timeout_s=_float(
+            dialogue_extra.get("connect_timeout_s")
+            or dialogue_extra.get("connectTimeoutS")
+            or os.environ.get("EIHEAD_OPENCLAW_CONNECT_TIMEOUT_S"),
+            10.0,
+        ),
+        openclaw_receive_timeout_s=_float(
+            dialogue_extra.get("receive_timeout_s")
+            or dialogue_extra.get("receiveTimeoutS")
+            or os.environ.get("EIHEAD_OPENCLAW_RECEIVE_TIMEOUT_S"),
+            0.02,
+        ),
+        openclaw_session_ready_timeout_s=_float(
+            dialogue_extra.get("session_ready_timeout_s")
+            or dialogue_extra.get("sessionReadyTimeoutS")
+            or os.environ.get("EIHEAD_OPENCLAW_SESSION_READY_TIMEOUT_S"),
+            15.0,
+        ),
         microphone_device=_text(microphone.get("device") or microphone.get("path"), "default"),
         speaker_device=_text(speaker.get("device") or speaker.get("path"), "default"),
         sample_rate=_int(microphone.get("sample_rate") or microphone.get("sampleRate"), 16000),
@@ -573,6 +659,15 @@ def _camera_state_path(config: Any | None) -> str:
     devices = _mapping(raw.get("devices"))
     camera = _mapping(devices.get("camera"))
     return _text(camera.get("state_path") or camera.get("statePath"), "")
+
+
+def _normalize_transport_provider(value: Any) -> str:
+    normalized = _text(value, "").strip().lower()
+    if normalized == "openclaw_realtime":
+        return "openclaw_realtime"
+    if normalized in {"", "legacy_native", "native", "subprocess", "eibrain_subprocess"}:
+        return "legacy_native"
+    return normalized
 
 
 def _legacy_detection_config(config: Any, *, config_path: str) -> dict[str, Any]:

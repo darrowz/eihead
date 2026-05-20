@@ -694,6 +694,8 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_chain_steps = _display_value(_voice_chain_steps_summary(voice.get("voice_chain")))
     voice_chain_asr = _display_value(_voice_chain_text(voice.get("voice_chain"), "last_asr_text"))
     voice_chain_tts = _display_value(_voice_chain_text(voice.get("voice_chain"), "last_tts_text"))
+    voice_openclaw_ws = _display_value(_openclaw_ws_summary(voice.get("openclaw_ws")))
+    voice_openclaw_error = _display_value(_openclaw_ws_error_summary(voice.get("openclaw_ws")))
     eivoice_conversation = _display_value(eivoice_panel.get("conversationState", "unknown"))
     eivoice_dropped_total = _display_value(_metric_value(eivoice_panel.get("droppedTotal")))
     eivoice_queue_summary = eivoice_panel.get("queueSummary") if isinstance(eivoice_panel.get("queueSummary"), Mapping) else {}
@@ -713,6 +715,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     eivoice_transport_reconnect = _display_value(
         _metric_value(_first_mapping_value(eivoice_transport, "reconnect").get("attempt"))
     )
+    eivoice_openclaw_ws = _display_value(_openclaw_ws_summary(eivoice_panel.get("openclawWs")))
     neck_current_angle = _display_value(_metric_value(neck.get("current_angle"), suffix="deg"))
     neck_target_angle = _display_value(_metric_value(neck.get("target_angle"), suffix="deg"))
     neck_will_move = _display_value(neck.get("will_move") if neck.get("will_move") is not None else "unknown")
@@ -834,6 +837,8 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">TTS 播放</div><span class="metric">{voice_tts_playback}</span></div>
       <div class="card"><div class="label">麦克风/VAD</div><span class="metric">{voice_mic_vad}</span></div>
       <div class="card"><div class="label">ASR 识别</div><span class="metric">{voice_asr_detail}</span></div>
+      <div class="card"><div class="label">OpenClaw WS</div><span class="metric">{voice_openclaw_ws}</span></div>
+      <div class="card"><div class="label">OpenClaw 错误</div><span class="metric">{voice_openclaw_error}</span></div>
       <div class="card"><div class="label">Ear</div><span class="metric">{voice_ear}</span></div>
       <div class="card"><div class="label">Mouth</div><span class="metric">{voice_mouth}</span></div>
       <div class="card"><div class="label">Dialogue</div><span class="metric">{voice_dialogue}</span></div>
@@ -868,6 +873,7 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Dropped total</div><span class="metric">{eivoice_dropped_total}</span></div>
       <div class="card"><div class="label">Max queue fill</div><span class="metric">{eivoice_queue_fill}</span></div>
       <div class="card"><div class="label">Transport state</div><span class="metric">{eivoice_transport_state}</span></div>
+      <div class="card"><div class="label">OpenClaw WS</div><span class="metric">{eivoice_openclaw_ws}</span></div>
       <div class="card"><div class="label">Transport heartbeat</div><span class="metric">{eivoice_transport_heartbeat}</span></div>
       <div class="card"><div class="label">Reconnect attempts</div><span class="metric">{eivoice_transport_reconnect}</span></div>
       <div class="card"><div class="label">Warnings</div><span class="metric">{eivoice_warning_text}</span></div>
@@ -1170,6 +1176,14 @@ def _render_lightweight_index(timestamp: float) -> str:
         .map((step) => `${{text(step.label || step.key)}} ${{metric(step.latency_ms, 'ms')}}`);
       return parts.length ? parts.join(' / ') : '未知';
     }}
+    function openclawWsSummary(ws) {{
+      if (!ws || Object.keys(ws).length === 0) return '未配置';
+      const parts = [];
+      parts.push(ws.connected ? 'connected' : 'disconnected');
+      if (ws.session_state) parts.push(`session=${{ws.session_state}}`);
+      if (ws.url) parts.push(ws.url);
+      return parts.join(' / ');
+    }}
     Promise.allSettled([
       loadJson('/health'),
       loadJson('/api/vision/realtime'),
@@ -1221,6 +1235,8 @@ def _render_lightweight_index(timestamp: float) -> str:
       setRows('voice-evidence', [
         ['状态', voice.status],
         ['实时音频', `enabled=${{text((voice.realtime_audio || {{}}).enabled)}} / running=${{text((voice.realtime_audio || {{}}).running)}}`],
+        ['OpenClaw WS', openclawWsSummary(voice.openclaw_ws || {{}})],
+        ['OpenClaw 错误', text((voice.openclaw_ws || {{}}).last_error, '无')],
         ['Round', `${{text((voice.round || {{}}).phase)}} / active=${{text((voice.round || {{}}).active)}}`],
         ['Scheduler', text((voice.scheduler || {{}}).state)],
         ['事件数', metric(voice.event_count)],
@@ -1610,6 +1626,28 @@ def _voice_chain_text(value: Any, key: str) -> str:
     if text in (None, ""):
         return "unknown"
     return str(text)
+
+
+def _openclaw_ws_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "not configured"
+    parts = ["connected" if value.get("connected") is True else "disconnected"]
+    session_state = value.get("session_state") or value.get("sessionState")
+    if session_state:
+        parts.append(f"session={session_state}")
+    url = value.get("url")
+    if url:
+        parts.append(str(url))
+    return " / ".join(parts)
+
+
+def _openclaw_ws_error_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "none"
+    error = value.get("last_error") or value.get("lastError")
+    if error in (None, ""):
+        return "none"
+    return str(error)
 
 
 def _voice_optimization_summary(value: Any) -> str:

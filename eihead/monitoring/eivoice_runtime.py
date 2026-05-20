@@ -33,6 +33,7 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
     audio_frontend = _normalize_audio_frontend(runtime)
     wakeword = dict(_mapping(runtime.get("wakeword") or runtime.get("wake_word") or runtime.get("wakeword_buffer")))
     transport = _normalize_transport(runtime.get("transport") or runtime.get("voiceTransport"))
+    openclaw_ws = _normalize_openclaw_ws(runtime, transport)
 
     warnings: list[str] = []
     if not state:
@@ -52,6 +53,8 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
         warnings.append("loopback unavailable")
     if _transport_degraded(transport):
         warnings.append(f"transport {transport['state']}")
+    if _openclaw_ws_degraded(transport, openclaw_ws):
+        warnings.append(f"openclaw_ws {openclaw_ws['sessionState']}")
     transport_error = _mapping(transport.get("lastError"))
     if transport_error:
         warnings.append(
@@ -59,6 +62,8 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
             f"{_text(transport_error.get('kind'), default='Error')} "
             f"{_text(transport_error.get('context'), default='unknown')}"
         )
+    if openclaw_ws.get("lastError"):
+        warnings.append(f"openclaw_ws error: {_text(openclaw_ws.get('lastError'))}")
     warnings = list(dict.fromkeys(warnings))
 
     health = "healthy"
@@ -70,6 +75,7 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
         or _component_unavailable(audio_frontend.get("vad"))
         or _component_unavailable(audio_frontend.get("loopback"))
         or _transport_degraded(transport)
+        or _openclaw_ws_degraded(transport, openclaw_ws)
         or bool(transport_error)
     ):
         health = "degraded"
@@ -84,6 +90,7 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
         "droppedTotal": dropped_total,
         "audioFrontend": audio_frontend,
         "transport": transport,
+        "openclawWs": openclaw_ws,
         "wakeword": wakeword,
         "health": health,
         "warnings": warnings,
@@ -264,6 +271,7 @@ def _normalize_transport(value: Any) -> dict[str, Any]:
     return {
         "name": _text(transport.get("transport") or transport.get("name"), default="unknown"),
         "state": _text(transport.get("state") or _mapping(transport.get("connection")).get("state"), default="unknown"),
+        "url": _text(transport.get("url") or transport.get("ws_url") or transport.get("wsUrl"), default=""),
         "heartbeat": {
             "awaiting_pong": bool(heartbeat.get("awaiting_pong") or heartbeat.get("awaitingPong")),
             "timed_out": bool(heartbeat.get("timed_out") or heartbeat.get("timedOut")),
@@ -283,6 +291,36 @@ def _transport_degraded(transport: Mapping[str, Any]) -> bool:
     state = _text(transport.get("state")).lower()
     heartbeat = _mapping(transport.get("heartbeat"))
     return state in {"reconnect_wait", "closed", "error", "failed"} or heartbeat.get("timed_out") is True
+
+
+def _normalize_openclaw_ws(runtime: Mapping[str, Any], transport: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _mapping(runtime.get("openclaw_ws") or runtime.get("openclawWs"))
+    connected = payload.get("connected")
+    if connected is None:
+        connected = _text(transport.get("name")).lower() == "openclaw_realtime" and _text(transport.get("state")).lower() == "connected"
+    return {
+        "connected": bool(connected),
+        "url": _text(payload.get("url") or transport.get("url"), default=""),
+        "lastError": _text(payload.get("last_error") or payload.get("lastError"), default=""),
+        "lastRxMs": _number(payload.get("last_rx_ms") or payload.get("lastRxMs"), default=0)
+        if payload.get("last_rx_ms") is not None or payload.get("lastRxMs") is not None
+        else None,
+        "lastTxMs": _number(payload.get("last_tx_ms") or payload.get("lastTxMs"), default=0)
+        if payload.get("last_tx_ms") is not None or payload.get("lastTxMs") is not None
+        else None,
+        "sessionState": _text(payload.get("session_state") or payload.get("sessionState"), default="unknown"),
+    }
+
+
+def _openclaw_ws_degraded(transport: Mapping[str, Any], openclaw_ws: Mapping[str, Any]) -> bool:
+    if _text(transport.get("name")).lower() != "openclaw_realtime" and not openclaw_ws.get("url"):
+        return False
+    if openclaw_ws.get("connected") is True:
+        return False
+    session_state = _text(openclaw_ws.get("sessionState")).lower()
+    return session_state in {"unknown", "missing_url", "pending_transport_api", "auth_failed", "error", "failed"} or bool(
+        openclaw_ws.get("lastError")
+    )
 
 
 def _normalize_component(value: Any) -> dict[str, Any]:

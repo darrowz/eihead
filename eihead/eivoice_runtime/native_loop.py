@@ -33,6 +33,17 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 @dataclass(frozen=True, slots=True)
 class NativeVoiceLoopConfig:
     enabled: bool = True
+    transport_provider: str = "legacy_native"
+    fallback_transport_provider: str = "legacy_native"
+    openclaw_ws_url: str = ""
+    openclaw_token_env_var: str = "OPENCLAW_REALTIME_TOKEN"
+    openclaw_model: str = ""
+    openclaw_voice: str = "Zephyr"
+    openclaw_brain_agent: str = "enabled"
+    openclaw_protocol: str = "openclaw.realtime.v1"
+    openclaw_connect_timeout_s: float = 10.0
+    openclaw_receive_timeout_s: float = 0.02
+    openclaw_session_ready_timeout_s: float = 15.0
     microphone_device: str = "default"
     speaker_device: str = "default"
     sample_rate: int = 16000
