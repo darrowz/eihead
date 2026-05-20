@@ -38,6 +38,12 @@ def build_native_provider_services(
 
 
 def build_native_voice_runtime(config: Any | None) -> NativeVoiceInteractionLoop | None:
+    if _bool(
+        os.environ.get("EIHEAD_NATIVE_VOICE_RUNTIME_DISABLED")
+        or os.environ.get("EIHEAD_DISABLE_NATIVE_VOICE_RUNTIME"),
+        False,
+    ):
+        return None
     if not _is_honjia_config(config):
         return None
     loop_config = native_voice_loop_config_from_eihead_config(config)
@@ -108,6 +114,14 @@ def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopC
             or os.environ.get("EIHEAD_OPENCLAW_TOKEN_ENV_VAR"),
             "OPENCLAW_REALTIME_TOKEN",
         ),
+        openclaw_provider=_text(
+            dialogue_extra.get("realtime_provider")
+            or dialogue_extra.get("realtimeProvider")
+            or dialogue_extra.get("openclaw_provider")
+            or dialogue_extra.get("openclawProvider")
+            or os.environ.get("EIHEAD_OPENCLAW_PROVIDER"),
+            "openai",
+        ),
         openclaw_model=_text(
             dialogue_extra.get("model")
             or dialogue_extra.get("openclaw_model")
@@ -133,7 +147,7 @@ def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopC
             or dialogue_extra.get("ws_protocol")
             or dialogue_extra.get("wsProtocol")
             or os.environ.get("EIHEAD_OPENCLAW_WS_PROTOCOL"),
-            "openclaw.realtime.v1",
+            "",
         ),
         openclaw_connect_timeout_s=_float(
             dialogue_extra.get("connect_timeout_s")

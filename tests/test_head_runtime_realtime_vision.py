@@ -637,6 +637,68 @@ def test_head_runtime_http_realtime_endpoint_exposes_simulator_diagnostics() -> 
     assert payload["detections_summary"] == "person 0.88"
 
 
+def test_head_runtime_http_exposes_voice_and_eivoice_runtime_diagnostics() -> None:
+    class VoiceRuntime:
+        def start(self) -> None:
+            return None
+
+        def voice_status(self) -> dict[str, Any]:
+            return {
+                "status": "ready",
+                "ear": {"status": "listening"},
+                "mouth": {"status": "idle"},
+                "voice_dialogue": {
+                    "running": True,
+                    "phase": "listening",
+                    "last_transcript": "你好鸿途",
+                    "last_reply": "我在。",
+                    "last_stage_latency_ms": {"listen_asr": 11.0, "dialogue": 22.0, "speak": 33.0, "total": 66.0},
+                },
+                "realtime_audio": {"enabled": True, "running": True},
+                "readiness_message": "runtime voice diagnostics are attached",
+            }
+
+        def status(self) -> dict[str, Any]:
+            return {
+                "state": "running",
+                "conversation_state": "listening",
+                "audio_frontend": {
+                    "aec": {"enabled": True, "available": True},
+                    "ns": {"enabled": True, "available": True},
+                    "vad": {"enabled": True, "available": True},
+                    "loopback": {"enabled": True, "available": True},
+                },
+                "transport": {"transport": "openclaw_realtime", "state": "connected"},
+                "openclaw_ws": {
+                    "connected": True,
+                    "url": "ws://honxin-gateway",
+                    "session_state": "ready",
+                },
+            }
+
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeBodyRuntime(),
+        config_path="config/test.yaml",
+        voice_runtime=VoiceRuntime(),
+    )
+
+    with _running_server(runtime, clock=lambda: 456.0) as base_url:
+        voice_status, voice_payload = _read_json(f"{base_url}/api/voice/realtime")
+        audio_status, audio_payload = _read_json(f"{base_url}/api/audio/realtime")
+        eivoice_status, eivoice_payload = _read_json(f"{base_url}/api/eivoice/runtime")
+
+    assert voice_status == 200
+    assert voice_payload["schema"] == "eihead.monitor.voice_realtime.v1"
+    assert voice_payload["voice_chain"]["last_asr_text"] == "你好鸿途"
+    assert voice_payload["voice_chain"]["last_tts_text"] == "我在。"
+    assert voice_payload["voice_chain"]["latency_ms"]["dialogue"] == 22.0
+    assert audio_status == 200
+    assert audio_payload["aliases"] == ["audio.realtime"]
+    assert eivoice_status == 200
+    assert eivoice_payload["eivoiceRuntime"]["state"] == "running"
+    assert eivoice_payload["eivoiceRuntime"]["openclawWs"]["sessionState"] == "ready"
+
+
 def test_head_runtime_does_not_promote_snapshot_static_compat_payload_to_realtime() -> None:
     runtime = HeadRuntimeApp(body_runtime=SnapshotStaticCompatRuntime(), config_path="config/test.yaml")
 

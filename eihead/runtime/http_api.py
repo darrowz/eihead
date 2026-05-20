@@ -9,7 +9,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from eihead.monitoring.eivoice_runtime import build_eivoice_runtime_panel, eivoice_runtime_status_from_app
 from eihead.monitoring.realtime_vision import realtime_vision_payload_from_app
+from eihead.monitoring.voice import build_voice_diagnostics_from_app
 
 
 JsonObject = dict[str, Any]
@@ -157,6 +159,10 @@ def create_handler(
                     return HTTPStatus.OK, self._call_mapping("capabilities")
                 if path in {"/api/vision/realtime", "/api/eye/realtime"}:
                     return HTTPStatus.OK, realtime_vision_payload_from_app(runtime_app, timestamp=now())
+                if path in {"/api/voice/realtime", "/api/audio/realtime"}:
+                    return HTTPStatus.OK, build_voice_diagnostics_from_app(runtime_app, timestamp=now())
+                if path == "/api/eivoice/runtime":
+                    return HTTPStatus.OK, _eivoice_runtime_payload(runtime_app)
                 if path in {"/actions", "/events"}:
                     raise HeadHttpApiError(
                         HTTPStatus.METHOD_NOT_ALLOWED,
@@ -178,6 +184,9 @@ def create_handler(
                     "/capabilities",
                     "/api/vision/realtime",
                     "/api/eye/realtime",
+                    "/api/voice/realtime",
+                    "/api/audio/realtime",
+                    "/api/eivoice/runtime",
                 }:
                     raise HeadHttpApiError(
                         HTTPStatus.METHOD_NOT_ALLOWED,
@@ -432,6 +441,10 @@ def _is_healthy(payload: Mapping[str, Any]) -> bool:
     if payload.get("ok") is False:
         return False
     return state not in UNHEALTHY_STATES
+
+
+def _eivoice_runtime_payload(app: Any) -> JsonObject:
+    return {"eivoiceRuntime": build_eivoice_runtime_panel(eivoice_runtime_status_from_app(app))}
 
 
 def _http_phrase(status_code: int) -> str:

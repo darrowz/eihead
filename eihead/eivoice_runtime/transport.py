@@ -122,6 +122,7 @@ class InMemoryVoiceStreamTransport:
             self._reconnect_backoff_s = None
             self._next_retry_at = None
             self._reconnect_reason = None
+            self._last_error = None
 
     def begin_reconnect(self) -> None:
         with self._lock:

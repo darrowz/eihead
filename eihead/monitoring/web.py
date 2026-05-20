@@ -14,6 +14,8 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from urllib.parse import urlsplit
 
 from .eivoice_runtime import build_eivoice_runtime_panel, eivoice_runtime_status_from_app
@@ -211,13 +213,18 @@ def create_handler(
                 )
                 return
             if path in {"/api/voice/realtime", "/api/audio/realtime"}:
+                proxied = _runtime_proxy_payload(path)
+                if proxied is not None:
+                    self._write_json(HTTPStatus.OK, proxied)
+                    return
                 self._write_json(
                     HTTPStatus.OK,
                     build_voice_diagnostics_from_app(runtime_app, timestamp=now()),
                 )
                 return
             if path == "/api/eivoice/runtime":
-                self._write_json(HTTPStatus.OK, _eivoice_runtime_payload(runtime_app))
+                proxied = _runtime_proxy_payload(path)
+                self._write_json(HTTPStatus.OK, proxied if proxied is not None else _eivoice_runtime_payload(runtime_app))
                 return
             if path in {"/api/neck/status", "/api/neck/realtime"}:
                 self._write_json(
@@ -511,6 +518,28 @@ def _eivoice_runtime_payload(app: Any) -> JsonObject:
     return {"eivoiceRuntime": build_eivoice_runtime_panel(_eivoice_runtime_status_from_app(app))}
 
 
+def _runtime_proxy_payload(path: str) -> JsonObject | None:
+    if not _env_truthy("EIHEAD_MONITOR_PROXY_RUNTIME_VOICE"):
+        return None
+    base_url = os.environ.get("EIHEAD_RUNTIME_URL", "").strip().rstrip("/")
+    if not base_url:
+        return None
+    timeout_s = _env_float("EIHEAD_MONITOR_PROXY_TIMEOUT_S", 1.0)
+    url = f"{base_url}{path}"
+    try:
+        with urlrequest.urlopen(url, timeout=timeout_s) as response:
+            body = response.read().decode("utf-8")
+    except (OSError, TimeoutError, urlerror.URLError):
+        return None
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, Mapping):
+        return dict(payload)
+    return None
+
+
 def _eivoice_runtime_status_from_app(app: Any) -> JsonObject:
     return eivoice_runtime_status_from_app(app)
 
@@ -696,6 +725,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_chain_tts = _display_value(_voice_chain_text(voice.get("voice_chain"), "last_tts_text"))
     voice_openclaw_ws = _display_value(_openclaw_ws_summary(voice.get("openclaw_ws")))
     voice_openclaw_error = _display_value(_openclaw_ws_error_summary(voice.get("openclaw_ws")))
+    voice_playback_gate = _display_value(_voice_playback_gate_summary(voice))
     eivoice_conversation = _display_value(eivoice_panel.get("conversationState", "unknown"))
     eivoice_dropped_total = _display_value(_metric_value(eivoice_panel.get("droppedTotal")))
     eivoice_queue_summary = eivoice_panel.get("queueSummary") if isinstance(eivoice_panel.get("queueSummary"), Mapping) else {}
@@ -839,6 +869,7 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">ASR 识别</div><span class="metric">{voice_asr_detail}</span></div>
       <div class="card"><div class="label">OpenClaw WS</div><span class="metric">{voice_openclaw_ws}</span></div>
       <div class="card"><div class="label">OpenClaw 错误</div><span class="metric">{voice_openclaw_error}</span></div>
+      <div class="card"><div class="label">回声门控</div><span class="metric">{voice_playback_gate}</span></div>
       <div class="card"><div class="label">Ear</div><span class="metric">{voice_ear}</span></div>
       <div class="card"><div class="label">Mouth</div><span class="metric">{voice_mouth}</span></div>
       <div class="card"><div class="label">Dialogue</div><span class="metric">{voice_dialogue}</span></div>
@@ -1145,6 +1176,19 @@ def _render_lightweight_index(timestamp: float) -> str:
       const chain = voice.voice_chain_readiness || {{}};
       return first(voice.readiness_message, chain.readinessMessage, chain.summary, '未知');
     }}
+    function playbackGateSummary(voice) {{
+      const observation = voice.observation || {{}};
+      const runtime = observation.eivoice_runtime || observation.eivoiceRuntime || {{}};
+      const frontend = runtime.audio_frontend || runtime.audioFrontend || {{}};
+      const gate = frontend.playbackGate || frontend.playback_gate || {{}};
+      if (!gate || Object.keys(gate).length === 0) return '未上报';
+      const muted = gate.muted === true ? '压制中' : '未压制';
+      const suppressed = first(gate.suppressedFrames, gate.suppressed_frames, 0);
+      const barge = first(gate.bargeInCount, gate.barge_in_count, 0);
+      const rms = first(gate.lastRms, gate.last_rms);
+      const peak = first(gate.lastPeak, gate.last_peak);
+      return `${{muted}} / 回声帧=${{metric(suppressed)}} / 打断=${{metric(barge)}} / rms=${{metric(rms)}} / peak=${{metric(peak)}}`;
+    }}
     function optimizationSummary(optimization) {{
       const latency = optimization.latency_ms || {{}};
       const bottleneck = optimization.bottleneck || {{}};
@@ -1237,6 +1281,7 @@ def _render_lightweight_index(timestamp: float) -> str:
         ['实时音频', `enabled=${{text((voice.realtime_audio || {{}}).enabled)}} / running=${{text((voice.realtime_audio || {{}}).running)}}`],
         ['OpenClaw WS', openclawWsSummary(voice.openclaw_ws || {{}})],
         ['OpenClaw 错误', text((voice.openclaw_ws || {{}}).last_error, '无')],
+        ['回声门控', playbackGateSummary(voice)],
         ['Round', `${{text((voice.round || {{}}).phase)}} / active=${{text((voice.round || {{}}).active)}}`],
         ['Scheduler', text((voice.scheduler || {{}}).state)],
         ['事件数', metric(voice.event_count)],
@@ -1272,6 +1317,16 @@ def _render_lightweight_index(timestamp: float) -> str:
 
 def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
 
 
 def _safe_payload(factory: Callable[[], JsonObject]) -> JsonObject:
@@ -1648,6 +1703,39 @@ def _openclaw_ws_error_summary(value: Any) -> str:
     if error in (None, ""):
         return "none"
     return str(error)
+
+
+def _voice_playback_gate_summary(value: Any) -> str:
+    gate = _voice_playback_gate(value)
+    if not gate:
+        return "not reported"
+    muted = "压制中" if gate.get("muted") is True else "未压制"
+    suppressed = gate.get("suppressed_frames") or gate.get("suppressedFrames") or 0
+    barge_in = gate.get("barge_in_count") or gate.get("bargeInCount") or 0
+    rms = gate.get("last_rms") or gate.get("lastRms")
+    peak = gate.get("last_peak") or gate.get("lastPeak")
+    return (
+        f"{muted} / 回声帧 {suppressed} / 打断 {barge_in} / "
+        f"rms {_metric_value(rms)} / peak {_metric_value(peak)}"
+    )
+
+
+def _voice_playback_gate(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    observation = value.get("observation")
+    if not isinstance(observation, Mapping):
+        return {}
+    runtime = observation.get("eivoice_runtime") or observation.get("eivoiceRuntime")
+    if not isinstance(runtime, Mapping):
+        return {}
+    frontend = runtime.get("audio_frontend") or runtime.get("audioFrontend")
+    if not isinstance(frontend, Mapping):
+        return {}
+    gate = frontend.get("playback_gate") or frontend.get("playbackGate")
+    if isinstance(gate, Mapping):
+        return gate
+    return {}
 
 
 def _voice_optimization_summary(value: Any) -> str:

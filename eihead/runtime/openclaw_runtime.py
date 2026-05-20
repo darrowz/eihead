@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from array import array
 from collections.abc import Callable, Mapping
+import math
 import subprocess
 import threading
 import time
@@ -11,7 +13,6 @@ from typing import Any
 from eihead.eivoice_runtime import (
     AudioFrame,
     EiVoiceRuntimeRunner,
-    NoOpAcousticFrontend,
     OpenClawRealtimeTransport,
 )
 from eihead.eivoice_runtime.native_loop import ArecordAudioFrameSource, NativeVoiceLoopConfig
@@ -23,16 +24,28 @@ TransportFactory = Callable[[NativeVoiceLoopConfig], OpenClawRealtimeTransport]
 class AplayPcmPlaybackSink:
     """Persistent raw PCM playback sink for OpenClaw realtime audio frames."""
 
-    def __init__(self, *, device: str = "default") -> None:
+    def __init__(
+        self,
+        *,
+        device: str = "default",
+        active_grace_s: float = 0.4,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         self.device = str(device or "default")
+        self.active_grace_s = float(active_grace_s)
+        self._clock = clock or time.monotonic
         self._process: subprocess.Popen[bytes] | None = None
         self._format: tuple[int, int] | None = None
         self._last_error = ""
+        self._last_play_at: float | None = None
+        self._last_frame_duration_ms: int | None = None
+        self._active_until = 0.0
 
     def play(self, frame: AudioFrame) -> None:
         pcm = frame.pcm or frame.payload
         if not pcm:
             return
+        self._record_playback_window(frame)
         self._ensure_process(sample_rate=frame.sample_rate_hz, channels=frame.channels)
         if self._process is None or self._process.stdin is None:
             return
@@ -47,6 +60,7 @@ class AplayPcmPlaybackSink:
         process = self._process
         self._process = None
         self._format = None
+        self._active_until = 0.0
         if process is None:
             return
         if process.stdin is not None:
@@ -67,13 +81,25 @@ class AplayPcmPlaybackSink:
                 self._last_error = error_text
 
     def status(self) -> dict[str, Any]:
+        now = self._clock()
         return {
             "device": self.device,
             "running": self._process is not None and self._process.poll() is None,
+            "active": now <= self._active_until,
+            "active_until_s": self._active_until,
+            "last_play_at_s": self._last_play_at,
+            "last_frame_duration_ms": self._last_frame_duration_ms,
             "sample_rate": self._format[0] if self._format else None,
             "channels": self._format[1] if self._format else None,
             "last_error": self._last_error,
         }
+
+    def _record_playback_window(self, frame: AudioFrame) -> None:
+        now = self._clock()
+        duration_s = max(0.0, float(frame.duration_ms) / 1000.0)
+        self._last_play_at = now
+        self._last_frame_duration_ms = int(frame.duration_ms)
+        self._active_until = max(self._active_until, now) + duration_s + max(0.0, self.active_grace_s)
 
     def _ensure_process(self, *, sample_rate: int, channels: int) -> None:
         audio_format = (int(sample_rate), int(channels))
@@ -101,6 +127,97 @@ class AplayPcmPlaybackSink:
         )
 
 
+class OpenClawPlaybackEchoGate:
+    """Mute upstream echo during playback while still allowing strong barge-in."""
+
+    def __init__(
+        self,
+        *,
+        playback_sink: Any,
+        on_barge_in: Callable[[Mapping[str, Any]], None],
+        rms_threshold: float = 0.13,
+        peak_threshold: float = 0.2,
+        consecutive_frames: int = 2,
+    ) -> None:
+        self.playback_sink = playback_sink
+        self.on_barge_in = on_barge_in
+        self.rms_threshold = float(rms_threshold)
+        self.peak_threshold = float(peak_threshold)
+        self.consecutive_frames = max(1, int(consecutive_frames))
+        self._speech_frames = 0
+        self._suppressed_frames = 0
+        self._barge_in_count = 0
+        self._last_rms = 0.0
+        self._last_peak = 0.0
+        self._last_muted = False
+        self._last_barge_in: dict[str, Any] | None = None
+
+    def process_capture(
+        self,
+        frame: AudioFrame,
+        *,
+        playback_reference: AudioFrame | None = None,
+    ) -> AudioFrame | None:
+        _ = playback_reference
+        rms, peak = _pcm_rms_peak(frame.pcm or frame.payload, channels=frame.channels)
+        playback = _mapping(self.playback_sink.status() if hasattr(self.playback_sink, "status") else {})
+        playback_active = bool(playback.get("active"))
+        self._last_rms = round(rms, 5)
+        self._last_peak = round(peak, 5)
+        if not playback_active:
+            self._speech_frames = 0
+            self._last_muted = False
+            return frame
+
+        if rms >= self.rms_threshold and peak >= self.peak_threshold:
+            self._speech_frames += 1
+        else:
+            self._speech_frames = 0
+
+        if self._speech_frames >= self.consecutive_frames:
+            self._speech_frames = 0
+            self._barge_in_count += 1
+            self._last_muted = False
+            payload = {
+                "reason": "barge-in",
+                "rms": self._last_rms,
+                "peak": self._last_peak,
+                "threshold": self.rms_threshold,
+                "peak_threshold": self.peak_threshold,
+                "suppressed_frames": self._suppressed_frames,
+            }
+            self._last_barge_in = dict(payload)
+            self.on_barge_in(payload)
+            return frame
+
+        self._suppressed_frames += 1
+        self._last_muted = True
+        return None
+
+    def readiness(self) -> dict[str, Any]:
+        return {
+            "mode": "openclaw_playback_echo_gate",
+            "healthy": True,
+            "aec": {"enabled": True, "available": True, "state": "playback_gate"},
+            "ns": {"enabled": False, "available": False, "state": "disabled"},
+            "vad": {"enabled": True, "available": True, "state": "barge_in_ready"},
+            "loopback": {"enabled": False, "available": False, "state": "disabled"},
+            "warnings": [],
+            "playbackGate": {
+                "muted": self._last_muted,
+                "suppressedFrames": self._suppressed_frames,
+                "bargeInCount": self._barge_in_count,
+                "speechFrames": self._speech_frames,
+                "consecutiveFrames": self.consecutive_frames,
+                "rmsThreshold": self.rms_threshold,
+                "peakThreshold": self.peak_threshold,
+                "lastRms": self._last_rms,
+                "lastPeak": self._last_peak,
+                "lastBargeIn": dict(self._last_barge_in) if self._last_barge_in else None,
+            },
+        }
+
+
 class OpenClawRealtimeRuntime:
     """Runtime adapter that bridges honjia microphone/playback to VoiceClaw."""
 
@@ -116,10 +233,17 @@ class OpenClawRealtimeRuntime:
         self.capture_source = capture_source or ArecordAudioFrameSource(config)
         self.playback_sink = playback_sink or AplayPcmPlaybackSink(device=config.speaker_device)
         self.transport = (transport_factory or _default_transport_factory)(config) if config.openclaw_ws_url else None
+        self.audio_frontend = OpenClawPlaybackEchoGate(
+            playback_sink=self.playback_sink,
+            on_barge_in=self._handle_barge_in,
+            rms_threshold=max(0.08, float(config.vad_rms_threshold)),
+            peak_threshold=max(0.18, float(config.vad_rms_threshold) * 1.5),
+            consecutive_frames=_barge_in_consecutive_frames(config),
+        )
         self.runner = (
             EiVoiceRuntimeRunner(
                 capture_source=self.capture_source,
-                audio_frontend=NoOpAcousticFrontend(),
+                audio_frontend=self.audio_frontend,
                 playback_sink=self.playback_sink,
                 transport=self.transport,
                 uid=config.dialogue_actor_id,
@@ -133,6 +257,7 @@ class OpenClawRealtimeRuntime:
         self._thread: threading.Thread | None = None
         self._started = False
         self._last_error = ""
+        self._last_barge_in: dict[str, Any] | None = None
 
     def start(self) -> None:
         if not self.config.enabled:
@@ -171,12 +296,14 @@ class OpenClawRealtimeRuntime:
 
     def stop_speech(self) -> dict[str, Any]:
         cleared = self.runner.interrupt_playback(reason="user_interrupt", source="openclaw_runtime") if self.runner else 0
+        cancelled = self.transport.cancel_output("user_interrupt") if self.transport is not None else False
         return {
             "status": "stopped",
             "success": True,
             "details": {
                 "provider": "openclaw_realtime",
                 "cleared": cleared,
+                "cancelled_remote_output": cancelled,
             },
         }
 
@@ -235,6 +362,7 @@ class OpenClawRealtimeRuntime:
             },
             "openclaw_ws": dict(openclaw_ws),
             "eivoice_runtime": runtime,
+            "barge_in": dict(self._last_barge_in) if self._last_barge_in else None,
             "readiness_message": self._readiness_message(openclaw_ws),
         }
 
@@ -286,6 +414,17 @@ class OpenClawRealtimeRuntime:
             self.transport.close("runtime_error")
             self.transport.schedule_reconnect("runtime_error")
 
+    def _handle_barge_in(self, payload: Mapping[str, Any]) -> None:
+        cancelled = self.transport.cancel_output("barge-in") if self.transport is not None else False
+        cleared = self.runner.interrupt_playback(reason="barge-in", source="openclaw_echo_gate") if self.runner else 0
+        with self._lock:
+            self._last_barge_in = {
+                **dict(payload),
+                "cancelled_remote_output": cancelled,
+                "cleared": cleared,
+                "ts": time.time(),
+            }
+
     def _openclaw_ws_status(self, runtime: Mapping[str, Any]) -> dict[str, Any]:
         transport = _mapping(runtime.get("transport"))
         payload = _mapping(runtime.get("openclaw_ws")) or _mapping(transport.get("openclaw_ws"))
@@ -329,6 +468,7 @@ class OpenClawRealtimeRuntime:
         return {
             "transport": "openclaw_realtime",
             "name": "openclaw_realtime",
+            "provider": self.config.openclaw_provider,
             "state": state,
             "url": self.config.openclaw_ws_url,
             "connection": {"state": state},
@@ -341,6 +481,7 @@ class OpenClawRealtimeRuntime:
         return {
             "status": "ready" if running else "idle",
             "backend": "openclaw_realtime",
+            "provider": self.config.openclaw_provider,
             "model": self.config.openclaw_model or "openclaw",
             "voice_id": self.config.openclaw_voice,
             "text_preview": "",
@@ -408,6 +549,7 @@ class OpenClawRealtimeRuntime:
             "transport": dict(transport),
             "openclaw_ws": dict(openclaw_ws),
             "capture": self.capture_source.status(),
+            "barge_in": dict(self._last_barge_in) if self._last_barge_in else None,
         }
 
     def _readiness_message(self, openclaw_ws: Mapping[str, Any]) -> str:
@@ -435,6 +577,7 @@ def _default_transport_factory(config: NativeVoiceLoopConfig) -> OpenClawRealtim
 def _session_config(config: NativeVoiceLoopConfig) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "sessionKey": config.dialogue_session_id,
+        "provider": config.openclaw_provider,
         "voice": config.openclaw_voice,
         "brainAgent": config.openclaw_brain_agent,
         "watchdog": "enabled",
@@ -471,4 +614,31 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-__all__ = ["AplayPcmPlaybackSink", "OpenClawRealtimeRuntime"]
+def _barge_in_consecutive_frames(config: NativeVoiceLoopConfig) -> int:
+    frame_ms = max(1, int(config.frame_ms))
+    min_voice_ms = max(frame_ms * 2, int(config.vad_min_voice_ms))
+    return max(2, min(5, math.ceil(min_voice_ms / frame_ms)))
+
+
+def _pcm_rms_peak(pcm: bytes, *, channels: int) -> tuple[float, float]:
+    if not pcm:
+        return 0.0, 0.0
+    samples = array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if not samples:
+        return 0.0, 0.0
+    if channels > 1:
+        mono = []
+        for idx in range(0, len(samples) - (len(samples) % channels), channels):
+            mono.append(max(abs(samples[idx + channel]) for channel in range(channels)))
+        values = [sample / 32768.0 for sample in mono]
+    else:
+        values = [sample / 32768.0 for sample in samples]
+    if not values:
+        return 0.0, 0.0
+    peak = max(abs(sample) for sample in values)
+    rms = math.sqrt(sum(sample * sample for sample in values) / len(values))
+    return rms, peak
+
+
+__all__ = ["AplayPcmPlaybackSink", "OpenClawPlaybackEchoGate", "OpenClawRealtimeRuntime"]

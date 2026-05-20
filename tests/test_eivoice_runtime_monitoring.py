@@ -9,6 +9,7 @@ from urllib import request
 from eihead.monitoring.eivoice_runtime import build_eivoice_runtime_panel
 from eihead.monitoring.voice import build_voice_diagnostics_from_app
 from eihead.monitoring.web import create_server
+from eihead.runtime.http_api import create_server as create_runtime_server
 
 
 def test_empty_status_waits_for_runtime_state() -> None:
@@ -117,6 +118,24 @@ def test_audio_frontend_panel_preserves_loopback_route_and_last_capture() -> Non
                 "audio_format": {"sample_rate": 48000, "frame_ms": 60, "channels": 2},
                 "aec_backend": "pipewire-monitor",
                 "aec_status": "unavailable",
+                "playback_gate": {
+                    "muted": True,
+                    "suppressed_frames": 7,
+                    "barge_in_count": 1,
+                    "speech_frames": 2,
+                    "consecutive_frames": 2,
+                    "rms_threshold": 0.08,
+                    "peak_threshold": 0.18,
+                    "last_rms": 0.12,
+                    "last_peak": 0.31,
+                    "last_barge_in": {
+                        "reason": "barge-in",
+                        "rms": 0.12,
+                        "peak": 0.31,
+                        "cleared": True,
+                        "cancelled_remote_output": True,
+                    },
+                },
                 "last_capture": {
                     "playback_reference_available": True,
                     "reference_age_ms": 42.0,
@@ -139,6 +158,11 @@ def test_audio_frontend_panel_preserves_loopback_route_and_last_capture() -> Non
     assert panel["audioFrontend"]["audioFormat"] == {"sampleRate": 48000, "frameMs": 60, "channels": 2}
     assert panel["audioFrontend"]["aecBackend"] == "pipewire-monitor"
     assert panel["audioFrontend"]["aecStatus"] == "unavailable"
+    assert panel["audioFrontend"]["playbackGate"]["muted"] is True
+    assert panel["audioFrontend"]["playbackGate"]["suppressedFrames"] == 7
+    assert panel["audioFrontend"]["playbackGate"]["bargeInCount"] == 1
+    assert panel["audioFrontend"]["playbackGate"]["lastRms"] == 0.12
+    assert panel["audioFrontend"]["playbackGate"]["lastBargeIn"]["cancelledRemoteOutput"] is True
     assert panel["audioFrontend"]["lastCapture"]["playbackReferenceAvailable"] is True
     assert panel["audioFrontend"]["lastCapture"]["referenceAgeMs"] == 42.0
     assert panel["audioFrontend"]["lastCapture"]["referenceMatchedBy"] == "pipewire-target"
@@ -480,6 +504,9 @@ class RuntimePanelApp:
     def capabilities(self) -> dict[str, Any]:
         return {"capabilities": {}}
 
+    def handle_action(self, action: dict[str, Any], trace_id: str | None = None) -> dict[str, Any]:
+        return {"ok": True, "accepted": True, "trace_id": trace_id, "action": action}
+
 
 class AttachedVoiceRuntimeApp(RuntimePanelApp):
     def voice_status(self) -> dict[str, Any]:
@@ -550,6 +577,20 @@ def running_server(app: Any) -> Iterator[str]:
         server.server_close()
 
 
+@contextmanager
+def running_runtime_server(app: Any) -> Iterator[str]:
+    server = create_runtime_server(app, host="127.0.0.1", port=0, clock=lambda: 456.0)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2.0)
+        server.server_close()
+
+
 def read_text(url: str) -> str:
     with request.urlopen(url, timeout=2.0) as response:
         return response.read().decode("utf-8")
@@ -603,6 +644,7 @@ def test_web_voice_realtime_reports_attached_native_runtime_as_live() -> None:
     assert "TTS 播放 4889.2ms" in body
     assert "最后 ASR" in body
     assert "最后 TTS" in body
+    assert "回声门控" in body
     assert "性能优化" in body
     assert "TTS 播放" in body
     assert "从头你每天早上九点不是要给我发新闻吗" in body
@@ -613,6 +655,22 @@ def test_web_voice_realtime_reports_attached_native_runtime_as_live() -> None:
     assert payload["optimization"]["latency_ms"]["speak"] == 4889.2
     assert payload["optimization"]["bottleneck"]["stage"] == "speak"
     assert payload["optimization"]["realtime_audio"]["audio_level"] == 0.02
+
+
+def test_monitor_can_proxy_voice_diagnostics_from_runtime_api(monkeypatch: Any) -> None:
+    with running_runtime_server(AttachedVoiceRuntimeApp()) as runtime_base_url:
+        monkeypatch.setenv("EIHEAD_MONITOR_PROXY_RUNTIME_VOICE", "1")
+        monkeypatch.setenv("EIHEAD_RUNTIME_URL", runtime_base_url)
+        with running_server(RuntimePanelApp()) as monitor_base_url:
+            voice_payload = read_json(f"{monitor_base_url}/api/voice/realtime")
+            audio_payload = read_json(f"{monitor_base_url}/api/audio/realtime")
+            eivoice_payload = read_json(f"{monitor_base_url}/api/eivoice/runtime")
+
+    assert voice_payload["voice_chain"]["last_asr_text"] == "从头你每天早上九点不是要给我发新闻吗"
+    assert voice_payload["voice_chain"]["last_tts_text"] == "我现在接口不稳，先给你简短回答：可以。"
+    assert voice_payload["optimization"]["latency_ms"]["speak"] == 4889.2
+    assert audio_payload["voice_chain"]["last_asr_text"] == "从头你每天早上九点不是要给我发新闻吗"
+    assert eivoice_payload["eivoiceRuntime"]["state"] == "running"
 
 
 def test_web_voice_realtime_shows_openclaw_ws_status() -> None:

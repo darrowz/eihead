@@ -214,10 +214,12 @@ def _normalize_audio_frontend(runtime: Mapping[str, Any]) -> dict[str, Any]:
     frontend = _mapping(runtime.get("audio_frontend") or runtime.get("acousticFrontend"))
     audio_format = _mapping(frontend.get("audio_format") or frontend.get("audioFormat"))
     return {
+        "mode": _text(frontend.get("mode"), default=""),
         "aec": _normalize_component(frontend.get("aec")),
         "ns": _normalize_component(frontend.get("ns") or frontend.get("noise_suppression")),
         "vad": _normalize_component(frontend.get("vad")),
         "loopback": _normalize_component(frontend.get("loopback")),
+        "playbackGate": _normalize_playback_gate(frontend.get("playback_gate") or frontend.get("playbackGate")),
         "devices": dict(_mapping(frontend.get("devices"))),
         "audioFormat": {
             "sampleRate": _number(audio_format.get("sample_rate") or audio_format.get("sampleRate"), default=0),
@@ -228,6 +230,39 @@ def _normalize_audio_frontend(runtime: Mapping[str, Any]) -> dict[str, Any]:
         "aecStatus": _text(frontend.get("aec_status") or frontend.get("aecStatus"), default=""),
         "lastCapture": _normalize_last_capture(frontend.get("last_capture") or frontend.get("lastCapture")),
         "warnings": _list(frontend.get("warnings")),
+    }
+
+
+def _normalize_playback_gate(value: Any) -> dict[str, Any]:
+    gate = _mapping(value)
+    if not gate:
+        return {}
+    last_barge_in = _mapping(gate.get("last_barge_in") or gate.get("lastBargeIn"))
+    return {
+        "muted": bool(gate.get("muted")),
+        "suppressedFrames": _number(gate.get("suppressed_frames") or gate.get("suppressedFrames"), default=0),
+        "bargeInCount": _number(gate.get("barge_in_count") or gate.get("bargeInCount"), default=0),
+        "speechFrames": _number(gate.get("speech_frames") or gate.get("speechFrames"), default=0),
+        "consecutiveFrames": _number(gate.get("consecutive_frames") or gate.get("consecutiveFrames"), default=0),
+        "rmsThreshold": _float(gate.get("rms_threshold") or gate.get("rmsThreshold"), default=0.0),
+        "peakThreshold": _float(gate.get("peak_threshold") or gate.get("peakThreshold"), default=0.0),
+        "lastRms": _float(gate.get("last_rms") or gate.get("lastRms"), default=0.0),
+        "lastPeak": _float(gate.get("last_peak") or gate.get("lastPeak"), default=0.0),
+        "lastBargeIn": _normalize_barge_in(last_barge_in),
+    }
+
+
+def _normalize_barge_in(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not value:
+        return {}
+    return {
+        "reason": _text(value.get("reason"), default=""),
+        "rms": _float(value.get("rms"), default=0.0),
+        "peak": _float(value.get("peak"), default=0.0),
+        "cleared": bool(value.get("cleared")),
+        "cancelledRemoteOutput": bool(
+            value.get("cancelled_remote_output") or value.get("cancelledRemoteOutput")
+        ),
     }
 
 

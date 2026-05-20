@@ -102,6 +102,8 @@ def test_transport_schedules_reconnect_and_records_timeout_error_when_pong_is_mi
     assert status["connection"]["state"] == "connected"
     assert status["reconnect"]["attempt"] == 0
     assert status["reconnect"]["next_retry_at"] is None
+    assert status["last_error"] is None
+    assert status["recent_errors"][0]["context"] == "heartbeat"
 
 
 def test_transport_record_error_and_backoff_cap_are_visible_in_status() -> None:

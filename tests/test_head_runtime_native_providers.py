@@ -757,6 +757,7 @@ def test_native_voice_runtime_can_select_openclaw_realtime_provider(tmp_path: Pa
                 "      provider: openclaw_realtime",
                 "      transport_provider: openclaw_realtime",
                 "      ws_url: wss://openclaw.example/ws",
+                "      realtime_provider: openai",
                 "      fallback_transport_provider: legacy_native",
                 "      session_id: honjia-voice",
             ]
@@ -770,15 +771,44 @@ def test_native_voice_runtime_can_select_openclaw_realtime_provider(tmp_path: Pa
 
     assert loop_config.transport_provider == "openclaw_realtime"
     assert loop_config.openclaw_ws_url == "wss://openclaw.example/ws"
+    assert loop_config.openclaw_provider == "openai"
     assert loop_config.fallback_transport_provider == "legacy_native"
     assert runtime is not None
 
     status = runtime.status()
 
     assert status["transport"]["transport"] == "openclaw_realtime"
+    assert status["transport"]["provider"] == "openai"
     assert status["openclaw_ws"]["connected"] is False
     assert status["openclaw_ws"]["url"] == "wss://openclaw.example/ws"
     assert status["openclaw_ws"]["last_error"] == ""
     assert status["openclaw_ws"]["last_rx_ms"] is None
     assert status["openclaw_ws"]["last_tx_ms"] is None
     assert status["openclaw_ws"]["session_state"] == "idle"
+
+
+def test_native_voice_runtime_can_be_disabled_for_monitor_process(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    config_path = tmp_path / "eihead.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia",
+                "capabilities:",
+                "  software:",
+                "    dialogue:",
+                "      enabled: true",
+                "      provider: openclaw_realtime",
+                "      transport_provider: openclaw_realtime",
+                "      ws_url: wss://openclaw.example/ws",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = load_eihead_config(config_path)
+
+    monkeypatch.setenv("EIHEAD_NATIVE_VOICE_RUNTIME_DISABLED", "1")
+
+    assert build_native_voice_runtime(config) is None

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import platform as platform_module
+import time
 from collections.abc import Callable, Mapping
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from eihead.eivoice_runtime.joyinside_voice import JoyInsideVoiceEvent
@@ -16,10 +20,18 @@ from .transport import InMemoryVoiceStreamTransport
 WebSocketFactory = Callable[[str], Any]
 EnvelopeEncoder = Callable[[Mapping[str, Any]], dict[str, Any]]
 EnvelopeDecoder = Callable[[Mapping[str, Any]], dict[str, Any] | None]
+DeviceSigner = Callable[[str, str], str]
+
+GATEWAY_PROTOCOL_VERSION = 4
+DEFAULT_CLIENT_ID = "cli"
+DEFAULT_CLIENT_MODE = "cli"
+DEFAULT_CLIENT_VERSION = "eihead"
+DEFAULT_SCOPES = ["operator.read", "operator.write"]
+DEFAULT_CAPS = ["tool-events"]
 
 
 class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
-    """Thin websocket transport that adapts EiVoice events to OpenClaw realtime JSON."""
+    """Thin websocket transport that adapts EiVoice audio to OpenClaw Talk relay RPC."""
 
     def __init__(
         self,
@@ -28,8 +40,17 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         token: str | None = None,
         token_env_var: str = "OPENCLAW_REALTIME_TOKEN",
         headers: Mapping[str, str] | None = None,
-        protocol: str = "openclaw.realtime.v1",
+        protocol: str = "",
         session_config: Mapping[str, Any] | None = None,
+        client_id: str = DEFAULT_CLIENT_ID,
+        client_mode: str = DEFAULT_CLIENT_MODE,
+        client_version: str = DEFAULT_CLIENT_VERSION,
+        client_platform: str | None = None,
+        client_device_family: str | None = None,
+        locale: str = "zh-CN",
+        device_identity: Mapping[str, Any] | None = None,
+        device_identity_path: str | None = None,
+        device_signer: DeviceSigner | None = None,
         connect_timeout: float = 10.0,
         receive_timeout: float = 0.02,
         session_ready_timeout: float = 15.0,
@@ -52,6 +73,18 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         self.headers = dict(headers or {})
         self.protocol = str(protocol or "")
         self.session_config = dict(session_config or {})
+        self.client_id = str(client_id or DEFAULT_CLIENT_ID)
+        self.client_mode = str(client_mode or DEFAULT_CLIENT_MODE)
+        self.client_version = str(client_version or DEFAULT_CLIENT_VERSION)
+        self.client_platform = _normalize_device_auth_metadata(
+            client_platform or _default_client_platform()
+        )
+        self.client_device_family = _normalize_device_auth_metadata(
+            client_device_family or platform_module.machine()
+        )
+        self.locale = str(locale or "zh-CN")
+        self.device_identity = _resolve_device_identity(device_identity, device_identity_path)
+        self.device_signer = device_signer or _default_device_signer
         self.connect_timeout = float(connect_timeout)
         self.receive_timeout = float(receive_timeout)
         self.session_ready_timeout = float(session_ready_timeout)
@@ -65,6 +98,11 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         self._last_user_transcript = ""
         self._last_assistant_transcript = ""
         self._session_id = ""
+        self._relay_session_id = ""
+        self._request_id = 0
+        self._input_sample_rate_hz = 24000
+        self._output_sample_rate_hz = 24000
+        self._connected_scopes: list[str] = []
 
     def connect(self) -> None:
         if not self.url:
@@ -72,6 +110,7 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         if self._ws is not None:
             return
         self._set_state("connecting")
+        ws: Any | None = None
         try:
             ws = self.websocket_factory(
                 self.url,
@@ -79,9 +118,14 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
                 timeout=self.connect_timeout,
             )
             _set_ws_timeout(ws, self.receive_timeout)
-            self._send_session_config(ws)
-            self._wait_for_session_ready(ws)
+            nonce = self._wait_for_gateway_challenge(ws)
+            self._connect_gateway(ws, nonce=nonce)
+            self._create_relay_session(ws)
+            self._wait_for_relay_ready(ws)
         except Exception as exc:
+            if ws is not None:
+                self._send_close_session(ws)
+                _safe_close_ws(ws)
             self.record_error(exc, context="connect")
             self._session_state = "error"
             self.schedule_reconnect("connect_error")
@@ -110,9 +154,23 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         if ws is None:
             self.record_error(RuntimeError("websocket not connected"), context="send_event")
             return False
+        if not self._relay_session_id:
+            self.record_error(RuntimeError("OpenClaw relay session is not ready"), context="send_event")
+            return False
         try:
-            message = self.encode_event(payload)
-            ws.send(json.dumps(message))
+            audio = self.encode_event(payload)
+            audio_base64 = str(audio.get("audioBase64") or audio.get("audio_base64") or audio.get("data") or "")
+            if not audio_base64:
+                raise ValueError("audio event missing audioBase64 payload")
+            self._send_request(
+                ws,
+                "talk.session.appendAudio",
+                {
+                    "sessionId": self._relay_session_id,
+                    "audioBase64": audio_base64,
+                    "timestamp": int(round(self._clock() * 1000)),
+                },
+            )
         except Exception as exc:
             self.record_error(exc, context="send_event")
             self._session_state = "error"
@@ -161,6 +219,29 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
                 return drained
             drained.append(event)
 
+    def cancel_output(self, reason: str = "barge-in") -> bool:
+        ws = self._ws
+        if ws is None:
+            self.record_error(RuntimeError("websocket not connected"), context="cancel_output")
+            return False
+        if not self._relay_session_id:
+            self.record_error(RuntimeError("OpenClaw relay session is not ready"), context="cancel_output")
+            return False
+        try:
+            self._send_request(
+                ws,
+                "talk.session.cancelOutput",
+                {
+                    "sessionId": self._relay_session_id,
+                    "reason": str(reason or "barge-in"),
+                },
+            )
+        except Exception as exc:
+            self.record_error(exc, context="cancel_output")
+            return False
+        self._session_state = "interrupted"
+        return True
+
     def status(self) -> dict[str, Any]:
         status = super().status()
         status["endpoint"] = {
@@ -174,6 +255,7 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
             "has_token": bool(self._resolved_token()),
         }
         status["socket_connected"] = self._ws is not None
+        status["provider"] = str(self.session_config.get("provider") or "")
         status["openclaw_ws"] = {
             "connected": self._ws is not None and status["state"] == "connected",
             "url": self.url,
@@ -188,14 +270,7 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         return status
 
     def _connection_headers(self) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        token = self._resolved_token()
-        if token and "Authorization" not in self.headers:
-            headers["Authorization"] = f"Bearer {token}"
-        if self.protocol and "Sec-WebSocket-Protocol" not in self.headers:
-            headers["Sec-WebSocket-Protocol"] = self.protocol
-        headers.update(self.headers)
-        return headers
+        return dict(self.headers)
 
     def _resolved_token(self) -> str | None:
         return self.token or os.getenv(self.token_env_var) or None
@@ -207,45 +282,166 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
             self._last_transition_at = now
             self._last_activity_at = now
 
-    def _send_session_config(self, ws: Any) -> None:
-        token = self._resolved_token()
-        payload = dict(self.session_config)
-        payload["type"] = "session.config"
-        if token and not payload.get("apiKey"):
-            payload["apiKey"] = token
-        ws.send(json.dumps(payload))
-        with self._lock:
-            self._last_tx_ms = int(round(self._clock() * 1000))
-            self._session_state = "configuring"
+    def _wait_for_gateway_challenge(self, ws: Any) -> str:
+        _set_ws_timeout(ws, self.session_ready_timeout)
+        while True:
+            try:
+                message = _recv_ws_json(ws)
+            except Exception as exc:
+                if _is_timeout(exc):
+                    if self.device_identity:
+                        raise RuntimeError("OpenClaw gateway connect challenge timed out") from exc
+                    return ""
+                raise
+            self._record_message(message, None)
+            if str(message.get("type") or "") == "event" and str(message.get("event") or "") == "connect.challenge":
+                payload = _mapping(message.get("payload"))
+                return str(payload.get("nonce") or "")
 
-    def _wait_for_session_ready(self, ws: Any) -> None:
+    def _connect_gateway(self, ws: Any, *, nonce: str) -> None:
+        params: dict[str, Any] = {
+            "minProtocol": GATEWAY_PROTOCOL_VERSION,
+            "maxProtocol": GATEWAY_PROTOCOL_VERSION,
+            "client": {
+                "id": self.client_id,
+                "version": self.client_version,
+                "platform": self.client_platform,
+                "mode": self.client_mode,
+                "deviceFamily": self.client_device_family,
+            },
+            "role": "operator",
+            "scopes": list(DEFAULT_SCOPES),
+            "caps": list(DEFAULT_CAPS),
+            "userAgent": "eihead-openclaw-realtime",
+            "locale": self.locale,
+        }
+        token = self._resolved_token()
+        if token:
+            params["auth"] = {"token": token}
+        device = self._build_connect_device(nonce=nonce, token=token)
+        if device:
+            params["device"] = device
+        response = self._request_response(ws, "connect", params)
+        auth = _mapping(response.get("auth"))
+        scopes = auth.get("scopes")
+        self._connected_scopes = [str(item) for item in scopes] if isinstance(scopes, list) else []
+        self._session_state = "gateway_connected"
+
+    def _create_relay_session(self, ws: Any) -> None:
+        params = self._session_create_params()
+        response = self._request_response(ws, "talk.session.create", params)
+        self._relay_session_id = str(response.get("relaySessionId") or response.get("sessionId") or "")
+        if not self._relay_session_id:
+            raise RuntimeError("OpenClaw talk.session.create did not return relaySessionId")
+        self._session_id = self._relay_session_id
+        audio = _mapping(response.get("audio"))
+        self._input_sample_rate_hz = _optional_int(audio.get("inputSampleRateHz")) or 24000
+        self._output_sample_rate_hz = _optional_int(audio.get("outputSampleRateHz")) or 24000
+        self._session_state = "session_created"
+
+    def _wait_for_relay_ready(self, ws: Any) -> None:
         _set_ws_timeout(ws, self.session_ready_timeout)
         while True:
             message = _recv_ws_json(ws)
             self._record_message(message, None)
-            message_type = str(message.get("type") or "").strip()
-            if message_type == "session.ready":
-                self._session_id = str(message.get("sessionId") or message.get("session_id") or "")
+            if _is_relay_event(message, self._relay_session_id, "ready"):
                 self._session_state = "ready"
                 _set_ws_timeout(ws, self.receive_timeout)
                 return
-            if message_type == "error":
-                code = message.get("code")
-                detail = message.get("message") or message.get("error") or "OpenClaw session config failed"
-                raise RuntimeError(f"OpenClaw realtime error {code}: {detail}")
+            if _is_relay_event(message, self._relay_session_id, "error"):
+                payload = _mapping(message.get("payload"))
+                raise RuntimeError(str(payload.get("message") or "OpenClaw realtime relay failed"))
+
+    def _request_response(self, ws: Any, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
+        _set_ws_timeout(ws, self.session_ready_timeout)
+        request_id = self._send_request(ws, method, dict(params))
+        while True:
+            message = _recv_ws_json(ws)
+            self._record_message(message, None)
+            if str(message.get("type") or "") != "res" or str(message.get("id") or "") != request_id:
+                continue
+            if message.get("ok") is True:
+                payload = message.get("payload")
+                return dict(payload) if isinstance(payload, Mapping) else {}
+            error = _mapping(message.get("error"))
+            raise RuntimeError(str(error.get("message") or f"OpenClaw gateway request failed: {method}"))
+
+    def _send_request(self, ws: Any, method: str, params: Mapping[str, Any]) -> str:
+        self._request_id += 1
+        request_id = str(self._request_id)
+        ws.send(json.dumps({"type": "req", "id": request_id, "method": method, "params": dict(params)}))
+        with self._lock:
+            self._last_tx_ms = int(round(self._clock() * 1000))
+            self._last_activity_at = self._clock()
+        return request_id
+
+    def _session_create_params(self) -> dict[str, Any]:
+        session_key = str(self.session_config.get("sessionKey") or self.session_config.get("session_key") or "honjia")
+        params: dict[str, Any] = {
+            "sessionKey": session_key,
+            "mode": "realtime",
+            "transport": "gateway-relay",
+            "brain": "agent-consult",
+        }
+        for source, target in (
+            ("provider", "provider"),
+            ("model", "model"),
+            ("voice", "voice"),
+            ("instructions", "instructions"),
+        ):
+            value = self.session_config.get(source)
+            if value:
+                params[target] = value
+        return params
+
+    def _build_connect_device(self, *, nonce: str, token: str | None) -> dict[str, Any] | None:
+        identity = self.device_identity
+        if not identity:
+            return None
+        private_key_pem = str(identity.get("privateKeyPem") or identity.get("private_key_pem") or "")
+        public_key_pem = str(identity.get("publicKeyPem") or identity.get("public_key_pem") or "")
+        if not private_key_pem or not public_key_pem:
+            return None
+        public_key = _public_key_raw_base64url(public_key_pem)
+        device_id = str(identity.get("deviceId") or identity.get("device_id") or _device_id_from_public_key(public_key))
+        signed_at = int(round(time.time() * 1000))
+        payload = _device_auth_payload_v3(
+            device_id=device_id,
+            client_id=self.client_id,
+            client_mode=self.client_mode,
+            role="operator",
+            scopes=DEFAULT_SCOPES,
+            signed_at_ms=signed_at,
+            token=token or "",
+            nonce=nonce,
+            platform=self.client_platform,
+            device_family=self.client_device_family,
+        )
+        return {
+            "id": device_id,
+            "publicKey": public_key,
+            "signature": self.device_signer(private_key_pem, payload),
+            "signedAt": signed_at,
+            "nonce": nonce,
+        }
 
     def _record_message(self, message: Mapping[str, Any], event: Mapping[str, Any] | None) -> None:
         message_type = str(message.get("type") or "").strip()
         now_ms = int(round(self._clock() * 1000))
-        if message_type:
+        relay_event = _relay_event_payload(message)
+        if relay_event and (not self._relay_session_id or str(relay_event.get("relaySessionId") or "") == self._relay_session_id):
+            relay_type = str(relay_event.get("type") or "").strip()
+            if relay_type:
+                self._session_state = _session_state_from_message(relay_type, self._session_state)
+            if relay_type == "transcript":
+                role = str(relay_event.get("role") or "").strip()
+                text = str(relay_event.get("text") or "").strip()
+                if role == "user" and text:
+                    self._last_user_transcript = text
+                if role == "assistant" and text:
+                    self._last_assistant_transcript = text
+        elif message_type:
             self._session_state = _session_state_from_message(message_type, self._session_state)
-        if message_type in {"transcript.delta", "transcript.done"}:
-            role = str(message.get("role") or "").strip()
-            text = str(message.get("text") or "").strip()
-            if role == "user" and text:
-                self._last_user_transcript = text
-            if role == "assistant" and text:
-                self._last_assistant_transcript = text
         if event is not None and _event_type(event) in {"AUDIO_CHUNK", "AUDIO"}:
             self._last_rx_ms = now_ms
         elif message_type:
@@ -255,9 +451,18 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         ws, self._ws = self._ws, None
         if ws is None:
             return
-        close = getattr(ws, "close", None)
-        if callable(close):
-            close()
+        self._send_close_session(ws)
+        _safe_close_ws(ws)
+
+    def _send_close_session(self, ws: Any) -> None:
+        relay_session_id = self._relay_session_id
+        if not relay_session_id:
+            return
+        try:
+            self._send_request(ws, "talk.session.close", {"sessionId": relay_session_id})
+        except Exception:
+            pass
+        self._relay_session_id = ""
 
 
 def default_openclaw_encode_event(event: Mapping[str, Any]) -> dict[str, Any]:
@@ -282,8 +487,7 @@ def default_openclaw_encode_event(event: Mapping[str, Any]) -> dict[str, Any]:
         if sample_rate_hz and sample_rate_hz != 24000:
             openclaw_audio = _resample_pcm16_base64(openclaw_audio, source_rate=sample_rate_hz, target_rate=24000)
         return {
-            "type": "audio.append",
-            "data": openclaw_audio,
+            "audioBase64": openclaw_audio,
             "sequence": _optional_int(content.get("index"), payload.get("index")),
             "duration_ms": _optional_int(content.get("durationMs"), content.get("duration_ms"), payload.get("durationMs")),
             "sample_rate_hz": 24000,
@@ -306,6 +510,35 @@ def default_openclaw_encode_event(event: Mapping[str, Any]) -> dict[str, Any]:
 
 def default_openclaw_decode_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
     payload = deepcopy(dict(message))
+    relay_payload = _relay_event_payload(payload)
+    if relay_payload:
+        relay_type = str(relay_payload.get("type") or "").strip()
+        if relay_type == "audio":
+            encoded = relay_payload.get("audioBase64") or relay_payload.get("audio_base64")
+            if encoded:
+                return {
+                    "contentType": "AUDIO_CHUNK",
+                    "content": {
+                        "eventType": "AUDIO_CHUNK",
+                        "audioBase64": str(encoded),
+                        "index": _optional_int(relay_payload.get("sequence"), relay_payload.get("index")) or 0,
+                        "durationMs": _optional_int(relay_payload.get("durationMs"), relay_payload.get("duration_ms")) or 60,
+                        "sampleRateHz": 24000,
+                        "channels": 1,
+                        "metadata": {
+                            "source": "openclaw_realtime",
+                            "messageType": "talk.event.audio",
+                        },
+                    },
+                }
+        if relay_type:
+            return {
+                "contentType": "OPENCLAW_EVENT",
+                "content": {
+                    "eventType": relay_type,
+                    "payload": relay_payload,
+                },
+            }
     message_type = str(
         payload.get("type") or payload.get("eventType") or payload.get("contentType") or ""
     ).strip()
@@ -329,11 +562,11 @@ def default_openclaw_decode_message(message: Mapping[str, Any]) -> dict[str, Any
                 "durationMs": _optional_int(payload.get("duration_ms"), payload.get("durationMs")) or 60,
                 "sampleRateHz": _optional_int(payload.get("sample_rate_hz"), payload.get("sampleRateHz")) or 16000,
                 "channels": _optional_int(payload.get("channels")) or 1,
-                    "metadata": {
-                        "source": "openclaw_realtime",
-                        "messageType": message_type or "audio",
-                    },
+                "metadata": {
+                    "source": "openclaw_realtime",
+                    "messageType": message_type or "audio",
                 },
+            },
         }
     if "content" in payload or "contentType" in payload:
         return payload
@@ -360,6 +593,15 @@ def _ws_headers(headers: Mapping[str, str]) -> list[str]:
     return [f"{name}: {value}" for name, value in headers.items() if value]
 
 
+def _safe_close_ws(ws: Any) -> None:
+    close = getattr(ws, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
 def _set_ws_timeout(ws: Any, timeout_s: float) -> None:
     settimeout = getattr(ws, "settimeout", None)
     if callable(settimeout):
@@ -379,6 +621,23 @@ def _recv_ws_json(ws: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("websocket JSON message must be an object")
     return dict(value)
+
+
+def _relay_event_payload(message: Mapping[str, Any]) -> dict[str, Any] | None:
+    if str(message.get("type") or "") != "event" or str(message.get("event") or "") != "talk.event":
+        return None
+    payload = message.get("payload")
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _is_relay_event(message: Mapping[str, Any], relay_session_id: str, event_type: str) -> bool:
+    payload = _relay_event_payload(message)
+    if not payload:
+        return False
+    return (
+        str(payload.get("relaySessionId") or "") == relay_session_id
+        and str(payload.get("type") or "") == event_type
+    )
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -420,6 +679,107 @@ def _optional_int(*values: Any) -> int | None:
     return None
 
 
+def _resolve_device_identity(
+    explicit: Mapping[str, Any] | None,
+    device_identity_path: str | None,
+) -> dict[str, Any] | None:
+    if explicit:
+        return dict(explicit)
+    candidate = (
+        device_identity_path
+        or os.getenv("OPENCLAW_DEVICE_IDENTITY_PATH")
+        or str(Path.home() / ".openclaw" / "identity" / "device.json")
+    )
+    try:
+        path = Path(candidate)
+        if not path.is_file():
+            return None
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return dict(parsed) if isinstance(parsed, Mapping) else None
+
+
+def _base64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _public_key_raw_base64url(public_key_pem: str) -> str:
+    try:
+        from cryptography.hazmat.primitives import serialization
+    except ImportError as exc:  # pragma: no cover - depends on target runtime.
+        raise RuntimeError("cryptography package is required for OpenClaw device identity signing") from exc
+    public_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
+    raw = public_key.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return _base64url(raw)
+
+
+def _device_id_from_public_key(public_key_base64url: str) -> str:
+    padded = public_key_base64url + "=" * ((4 - len(public_key_base64url) % 4) % 4)
+    raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _default_client_platform() -> str:
+    system = platform_module.system().strip().lower()
+    if system == "windows":
+        return "win32"
+    if system == "darwin":
+        return "darwin"
+    if system == "linux":
+        return "linux"
+    return system
+
+
+def _normalize_device_auth_metadata(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return "".join(chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in text)
+
+
+def _default_device_signer(private_key_pem: str, payload: str) -> str:
+    try:
+        from cryptography.hazmat.primitives import serialization
+    except ImportError as exc:  # pragma: no cover - depends on target runtime.
+        raise RuntimeError("cryptography package is required for OpenClaw device identity signing") from exc
+    private_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+    signature = private_key.sign(payload.encode("utf-8"))
+    return _base64url(signature)
+
+
+def _device_auth_payload_v3(
+    *,
+    device_id: str,
+    client_id: str,
+    client_mode: str,
+    role: str,
+    scopes: list[str],
+    signed_at_ms: int,
+    token: str,
+    nonce: str,
+    platform: str,
+    device_family: str,
+) -> str:
+    return "|".join(
+        [
+            "v3",
+            device_id,
+            client_id,
+            client_mode,
+            role,
+            ",".join(scopes),
+            str(signed_at_ms),
+            token or "",
+            nonce,
+            _normalize_device_auth_metadata(platform),
+            _normalize_device_auth_metadata(device_family),
+        ]
+    )
+
 def _resample_pcm16_base64(encoded: str, *, source_rate: int, target_rate: int) -> str:
     if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate:
         return encoded
@@ -444,17 +804,18 @@ def _resample_pcm16_base64(encoded: str, *, source_rate: int, target_rate: int) 
 
 
 def _session_state_from_message(message_type: str, current: str) -> str:
-    if message_type == "session.ready":
+    normalized = message_type.lower()
+    if normalized in {"session.ready", "ready"}:
         return "ready"
-    if message_type == "session.ended":
+    if normalized in {"session.ended", "close", "session.closed"}:
         return "ended"
-    if message_type == "turn.started":
+    if normalized == "turn.started":
         return "listening"
-    if message_type == "turn.ended":
+    if normalized == "turn.ended":
         return "ready"
-    if message_type == "audio.delta":
+    if normalized in {"audio.delta", "audio", "audio_chunk"}:
         return "speaking"
-    if message_type == "error":
+    if normalized in {"error", "session.error"}:
         return "error"
     return current
 

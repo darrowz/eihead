@@ -26,3 +26,11 @@ def test_release_installer_installs_runtime_and_monitor_units() -> None:
     assert "eihead-runtime.service" in text
     assert "eihead-monitor.service" in text
     assert 'sudo systemctl restart "$unit"' in text
+
+
+def test_monitor_unit_proxies_voice_from_runtime_without_starting_voice_loop() -> None:
+    text = _read("deploy/systemd/eihead-monitor.service")
+
+    assert "Environment=EIHEAD_RUNTIME_URL=http://127.0.0.1:18081" in text
+    assert "Environment=EIHEAD_NATIVE_VOICE_RUNTIME_DISABLED=1" in text
+    assert "Environment=EIHEAD_MONITOR_PROXY_RUNTIME_VOICE=1" in text

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from array import array
 import json
 
 import pytest
 
-from eihead.eivoice_runtime import EiVoiceRuntimeRunner, NoOpAcousticFrontend
+from eihead.eivoice_runtime import AudioFrame, EiVoiceRuntimeRunner, NoOpAcousticFrontend
 from eihead.eivoice_runtime.native_loop import NativeVoiceLoopConfig
 from eihead.eivoice_runtime.openclaw_transport import OpenClawRealtimeTransport
-from eihead.runtime.openclaw_runtime import OpenClawRealtimeRuntime
+from eihead.runtime.openclaw_runtime import (
+    AplayPcmPlaybackSink,
+    OpenClawPlaybackEchoGate,
+    OpenClawRealtimeRuntime,
+    _session_config,
+)
 
 
 class ManualClock:
@@ -27,6 +33,7 @@ class FakeWebSocket:
         self.sent: list[object] = []
         self.closed = False
         self.timeout: float | None = None
+        self.timeout_history: list[float] = []
 
     def send(self, payload: object) -> None:
         self.sent.append(payload)
@@ -38,6 +45,7 @@ class FakeWebSocket:
 
     def settimeout(self, value: float) -> None:
         self.timeout = value
+        self.timeout_history.append(value)
 
     def close(self) -> None:
         self.closed = True
@@ -57,6 +65,7 @@ class EmptyCaptureSource:
 class FakePlaybackSink:
     def __init__(self) -> None:
         self.played: list[object] = []
+        self.active = False
 
     def play(self, frame: object) -> None:
         self.played.append(frame)
@@ -65,14 +74,45 @@ class FakePlaybackSink:
         return None
 
     def status(self) -> dict[str, object]:
-        return {"running": False}
+        return {"running": False, "active": self.active}
+
+
+def _pcm_constant(amplitude: int, samples: int = 160) -> bytes:
+    return array("h", [int(amplitude)] * int(samples)).tobytes()
 
 
 def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENCLAW_REALTIME_TOKEN", "env-token")
-    socket = FakeWebSocket(incoming=[{"type": "session.ready", "sessionId": "session-1"}])
+    socket = FakeWebSocket(
+        incoming=[
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {
+                "type": "res",
+                "id": "1",
+                "ok": True,
+                "payload": {"auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]}},
+            },
+            {
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {
+                    "provider": "openai",
+                    "transport": "gateway-relay",
+                    "relaySessionId": "relay-1",
+                    "audio": {
+                        "inputEncoding": "pcm16",
+                        "inputSampleRateHz": 24000,
+                        "outputEncoding": "pcm16",
+                        "outputSampleRateHz": 24000,
+                    },
+                },
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
+        ]
+    )
     captured: dict[str, object] = {}
 
     def _connect(url: str, *, header: list[str], timeout: float) -> FakeWebSocket:
@@ -86,7 +126,9 @@ def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope
         websocket_factory=_connect,
         headers={"X-Trace-Id": "trace-1"},
         clock=ManualClock(10.0),
-        session_config={"sessionKey": "honjia-voice", "voice": "Zephyr"},
+        session_config={"sessionKey": "honjia-voice", "voice": "Zephyr", "provider": "openai"},
+        client_platform="test",
+        client_device_family="unit",
     )
 
     transport.connect()
@@ -110,50 +152,148 @@ def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope
     assert captured == {
         "url": "wss://openclaw.example/realtime",
         "header": [
-            "Authorization: Bearer env-token",
-            "Sec-WebSocket-Protocol: openclaw.realtime.v1",
             "X-Trace-Id: trace-1",
         ],
         "timeout": 10.0,
     }
-    assert socket.sent == [
-        json.dumps(
-            {
+    sent = [json.loads(str(item)) for item in socket.sent]
+    assert sent == [
+        {
+            "type": "req",
+            "id": "1",
+            "method": "connect",
+            "params": {
+                "minProtocol": 4,
+                "maxProtocol": 4,
+                "client": {
+                    "id": "cli",
+                    "version": "eihead",
+                    "platform": "test",
+                    "mode": "cli",
+                    "deviceFamily": "unit",
+                },
+                "role": "operator",
+                "scopes": ["operator.read", "operator.write"],
+                "caps": ["tool-events"],
+                "auth": {"token": "env-token"},
+                "userAgent": "eihead-openclaw-realtime",
+                "locale": "zh-CN",
+            },
+        },
+        {
+            "type": "req",
+            "id": "2",
+            "method": "talk.session.create",
+            "params": {
                 "sessionKey": "honjia-voice",
+                "mode": "realtime",
+                "transport": "gateway-relay",
+                "brain": "agent-consult",
+                "provider": "openai",
                 "voice": "Zephyr",
-                "type": "session.config",
-                "apiKey": "env-token",
-            }
-        ),
-        json.dumps(
-            {
-                "type": "audio.append",
-                "data": "AQID",
-                "sequence": 7,
-                "duration_ms": 40,
-                "sample_rate_hz": 24000,
-                "channels": 1,
-                "uid": "user-1",
-                "mid": "mid-1",
-            }
-        )
+            },
+        },
+        {
+            "type": "req",
+            "id": "3",
+            "method": "talk.session.appendAudio",
+            "params": {
+                "sessionId": "relay-1",
+                "audioBase64": "AQID",
+                "timestamp": 10000,
+            },
+        },
     ]
     assert transport.status()["connection"]["state"] == "connected"
+    assert socket.timeout_history == [0.02, 15.0, 15.0, 15.0, 15.0, 0.02]
+    transport.close()
+    assert json.loads(str(socket.sent[-1])) == {
+        "type": "req",
+        "id": "4",
+        "method": "talk.session.close",
+        "params": {"sessionId": "relay-1"},
+    }
+    assert socket.closed is True
+
+
+def test_openclaw_device_auth_uses_epoch_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    private_key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
+    public_key_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("ascii")
+    captured: dict[str, str] = {}
+
+    def _signer(private_key_text: str, payload: str) -> str:
+        captured["private_key"] = private_key_text
+        captured["payload"] = payload
+        return "signature-1"
+
+    monkeypatch.setattr("eihead.eivoice_runtime.openclaw_transport.time.time", lambda: 1_700_000_000.25)
+    transport = OpenClawRealtimeTransport(
+        url="wss://openclaw.example/realtime",
+        clock=ManualClock(10.0),
+        device_identity={
+            "deviceId": "device-1",
+            "privateKeyPem": private_key_pem,
+            "publicKeyPem": public_key_pem,
+        },
+        device_signer=_signer,
+        client_platform="LINUX",
+        client_device_family="Pi",
+    )
+
+    device = transport._build_connect_device(nonce="nonce-1", token="token-1")
+
+    assert device is not None
+    assert device["id"] == "device-1"
+    assert device["signedAt"] == 1_700_000_000_250
+    assert device["signature"] == "signature-1"
+    assert captured["private_key"] == private_key_pem
+    assert "|1700000000250|" in captured["payload"]
+    assert captured["payload"].endswith("|linux|pi")
 
 
 def test_openclaw_transport_receives_audio_delta_and_updates_status() -> None:
     clock = ManualClock(20.0)
     socket = FakeWebSocket(
         incoming=[
-            {"type": "session.ready", "sessionId": "session-1"},
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {"type": "res", "id": "1", "ok": True, "payload": {"auth": {"role": "operator"}}},
+            {
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {
+                    "provider": "openai",
+                    "transport": "gateway-relay",
+                    "relaySessionId": "relay-1",
+                    "audio": {
+                        "inputEncoding": "pcm16",
+                        "inputSampleRateHz": 24000,
+                        "outputEncoding": "pcm16",
+                        "outputSampleRateHz": 24000,
+                    },
+                },
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
             json.dumps(
                 {
-                    "type": "audio.delta",
-                    "data": "BAUG",
-                    "sequence": 3,
-                    "duration_ms": 80,
-                    "sample_rate_hz": 24000,
-                    "channels": 1,
+                    "type": "event",
+                    "event": "talk.event",
+                    "payload": {
+                        "relaySessionId": "relay-1",
+                        "type": "audio",
+                        "audioBase64": "BAUG",
+                    },
                 }
             ),
         ]
@@ -175,19 +315,19 @@ def test_openclaw_transport_receives_audio_delta_and_updates_status() -> None:
     assert socket.timeout == 2.5
     assert audio_event == {
         "contentType": "AUDIO_CHUNK",
-        "content": {
-            "eventType": "AUDIO_CHUNK",
-            "audioBase64": "BAUG",
-            "index": 3,
-            "durationMs": 80,
-            "sampleRateHz": 24000,
-            "channels": 1,
-            "metadata": {
-                "source": "openclaw_realtime",
-                "messageType": "audio.delta",
+            "content": {
+                "eventType": "AUDIO_CHUNK",
+                "audioBase64": "BAUG",
+                "index": 0,
+                "durationMs": 60,
+                "sampleRateHz": 24000,
+                "channels": 1,
+                "metadata": {
+                    "source": "openclaw_realtime",
+                    "messageType": "talk.event.audio",
+                },
             },
-        },
-    }
+        }
     status = transport.status()
     assert status["openclaw_ws"]["session_state"] == "speaking"
     assert status["openclaw_ws"]["last_rx_ms"] == 20750
@@ -210,18 +350,114 @@ def test_openclaw_transport_send_event_without_connection_records_error() -> Non
     assert status["last_error"]["kind"] == "RuntimeError"
 
 
+def test_openclaw_transport_cancel_output_sends_gateway_request() -> None:
+    socket = FakeWebSocket(
+        incoming=[
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {"type": "res", "id": "1", "ok": True, "payload": {"auth": {"role": "operator"}}},
+            {
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {
+                    "relaySessionId": "relay-1",
+                    "audio": {
+                        "inputSampleRateHz": 24000,
+                        "outputSampleRateHz": 24000,
+                    },
+                },
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
+        ]
+    )
+    transport = OpenClawRealtimeTransport(
+        url="wss://openclaw.example/realtime",
+        token="token",
+        websocket_factory=lambda url, *, header, timeout: socket,
+    )
+
+    transport.connect()
+
+    assert transport.cancel_output("barge-in") is True
+    payload = json.loads(socket.sent[-1])
+    assert payload == {
+        "type": "req",
+        "id": "3",
+        "method": "talk.session.cancelOutput",
+        "params": {"sessionId": "relay-1", "reason": "barge-in"},
+    }
+    assert transport.status()["openclaw_ws"]["session_state"] == "interrupted"
+
+
+def test_openclaw_playback_sink_reports_active_audio_window() -> None:
+    clock = ManualClock(10.0)
+    sink = AplayPcmPlaybackSink(device="default", active_grace_s=0.1, clock=clock)
+    sink._ensure_process = lambda *, sample_rate, channels: None  # type: ignore[method-assign]
+
+    sink.play(AudioFrame(pcm=_pcm_constant(1000), duration_ms=200, sample_rate_hz=16000, channels=1))
+
+    assert sink.status()["active"] is True
+    clock.advance(0.31)
+    assert sink.status()["active"] is False
+
+
+def test_openclaw_echo_gate_suppresses_playback_echo_and_allows_barge_in() -> None:
+    sink = FakePlaybackSink()
+    sink.active = True
+    barge_ins: list[dict[str, object]] = []
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: barge_ins.append(dict(payload)),
+        rms_threshold=0.1,
+        peak_threshold=0.2,
+        consecutive_frames=2,
+    )
+
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+    loud = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(loud) is None
+    assert gate.process_capture(loud) is loud
+    readiness = gate.readiness()
+
+    assert len(barge_ins) == 1
+    assert readiness["playbackGate"]["suppressedFrames"] == 2
+    assert readiness["playbackGate"]["bargeInCount"] == 1
+    assert readiness["playbackGate"]["lastBargeIn"]["reason"] == "barge-in"
+
+
 def test_openclaw_transport_receive_event_integrates_with_runtime_runner() -> None:
     socket = FakeWebSocket(
         incoming=[
-            {"type": "session.ready", "sessionId": "session-1"},
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {"type": "res", "id": "1", "ok": True, "payload": {"auth": {"role": "operator"}}},
             {
-                "type": "audio.delta",
-                "data": "QkFTRTY0",
-                "sequence": 4,
-                "duration_ms": 20,
-                "sample_rate_hz": 16000,
-                "channels": 1,
-            }
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {
+                    "provider": "openai",
+                    "transport": "gateway-relay",
+                    "relaySessionId": "relay-1",
+                    "audio": {
+                        "inputEncoding": "pcm16",
+                        "inputSampleRateHz": 24000,
+                        "outputEncoding": "pcm16",
+                        "outputSampleRateHz": 24000,
+                    },
+                },
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
+            {
+                "type": "event",
+                "event": "talk.event",
+                "payload": {
+                    "relaySessionId": "relay-1",
+                    "type": "audio",
+                    "audioBase64": "QkFTRTY0",
+                },
+            },
         ]
     )
     transport = OpenClawRealtimeTransport(
@@ -244,13 +480,37 @@ def test_openclaw_transport_receive_event_integrates_with_runtime_runner() -> No
     assert runner.step_playback() is True
     frame = playback.played[0]
     assert frame.pcm == b"BASE64"
-    assert frame.sequence == 4
-    assert frame.duration_ms == 20
+    assert frame.sequence == 0
+    assert frame.duration_ms == 60
 
 
 def test_openclaw_runtime_retries_after_connect_failure() -> None:
     clock = ManualClock(100.0)
-    sockets = [FakeWebSocket(incoming=[{"type": "session.ready", "sessionId": "session-2"}])]
+    sockets = [
+        FakeWebSocket(
+            incoming=[
+                {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-2"}},
+                {"type": "res", "id": "1", "ok": True, "payload": {"auth": {"role": "operator"}}},
+                {
+                    "type": "res",
+                    "id": "2",
+                    "ok": True,
+                    "payload": {
+                        "provider": "openai",
+                        "transport": "gateway-relay",
+                        "relaySessionId": "relay-2",
+                        "audio": {
+                            "inputEncoding": "pcm16",
+                            "inputSampleRateHz": 24000,
+                            "outputEncoding": "pcm16",
+                            "outputSampleRateHz": 24000,
+                        },
+                    },
+                },
+                {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-2", "type": "ready"}},
+            ]
+        )
+    ]
     connect_attempts = 0
 
     def _connect(url: str, *, header: list[str], timeout: float) -> FakeWebSocket:
@@ -280,3 +540,19 @@ def test_openclaw_runtime_retries_after_connect_failure() -> None:
     assert runtime._ensure_connected() is True
     assert connect_attempts == 2
     assert runtime.status()["openclaw_ws"]["connected"] is True
+
+
+def test_openclaw_runtime_session_config_includes_realtime_provider() -> None:
+    payload = _session_config(
+        NativeVoiceLoopConfig(
+            dialogue_session_id="honjia-voice",
+            openclaw_provider="openai",
+            openclaw_model="gpt-realtime-2",
+            openclaw_voice="cedar",
+        )
+    )
+
+    assert payload["sessionKey"] == "honjia-voice"
+    assert payload["provider"] == "openai"
+    assert payload["model"] == "gpt-realtime-2"
+    assert payload["voice"] == "cedar"
