@@ -119,6 +119,7 @@ def test_audio_frontend_panel_preserves_loopback_route_and_last_capture() -> Non
                 "aec_backend": "pipewire-monitor",
                 "aec_status": "unavailable",
                 "playback_gate": {
+                    "barge_in_enabled": False,
                     "muted": True,
                     "suppressed_frames": 7,
                     "barge_in_count": 1,
@@ -159,6 +160,7 @@ def test_audio_frontend_panel_preserves_loopback_route_and_last_capture() -> Non
     assert panel["audioFrontend"]["aecBackend"] == "pipewire-monitor"
     assert panel["audioFrontend"]["aecStatus"] == "unavailable"
     assert panel["audioFrontend"]["playbackGate"]["muted"] is True
+    assert panel["audioFrontend"]["playbackGate"]["bargeInEnabled"] is False
     assert panel["audioFrontend"]["playbackGate"]["suppressedFrames"] == 7
     assert panel["audioFrontend"]["playbackGate"]["bargeInCount"] == 1
     assert panel["audioFrontend"]["playbackGate"]["lastRms"] == 0.12

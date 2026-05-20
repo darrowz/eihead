@@ -93,6 +93,7 @@ capabilities:
       token_env_var: ${EIHEAD_OPENCLAW_TOKEN_ENV_VAR:-OPENCLAW_REALTIME_TOKEN}
       realtime_provider: ${EIHEAD_OPENCLAW_PROVIDER:-openai}
       ws_protocol: ${EIHEAD_OPENCLAW_WS_PROTOCOL:-}
+      barge_in_enabled: ${EIHEAD_OPENCLAW_BARGE_IN_ENABLED:-false}
       voice: ${EIHEAD_OPENCLAW_VOICE:-Zephyr}
       brain_agent: ${EIHEAD_OPENCLAW_BRAIN_AGENT:-enabled}
       command: /opt/eihead/current/.venv/bin/python

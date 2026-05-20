@@ -239,6 +239,7 @@ def _normalize_playback_gate(value: Any) -> dict[str, Any]:
         return {}
     last_barge_in = _mapping(gate.get("last_barge_in") or gate.get("lastBargeIn"))
     return {
+        "bargeInEnabled": bool(gate.get("barge_in_enabled") or gate.get("bargeInEnabled")),
         "muted": bool(gate.get("muted")),
         "suppressedFrames": _number(gate.get("suppressed_frames") or gate.get("suppressedFrames"), default=0),
         "bargeInCount": _number(gate.get("barge_in_count") or gate.get("bargeInCount"), default=0),

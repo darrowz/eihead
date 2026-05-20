@@ -1183,11 +1183,12 @@ def _render_lightweight_index(timestamp: float) -> str:
       const gate = frontend.playbackGate || frontend.playback_gate || {{}};
       if (!gate || Object.keys(gate).length === 0) return '未上报';
       const muted = gate.muted === true ? '压制中' : '未压制';
+      const autoBarge = gate.bargeInEnabled === true || gate.barge_in_enabled === true ? '自动打断开' : '自动打断关';
       const suppressed = first(gate.suppressedFrames, gate.suppressed_frames, 0);
       const barge = first(gate.bargeInCount, gate.barge_in_count, 0);
       const rms = first(gate.lastRms, gate.last_rms);
       const peak = first(gate.lastPeak, gate.last_peak);
-      return `${{muted}} / 回声帧=${{metric(suppressed)}} / 打断=${{metric(barge)}} / rms=${{metric(rms)}} / peak=${{metric(peak)}}`;
+      return `${{muted}} / ${{autoBarge}} / 回声帧=${{metric(suppressed)}} / 打断=${{metric(barge)}} / rms=${{metric(rms)}} / peak=${{metric(peak)}}`;
     }}
     function optimizationSummary(optimization) {{
       const latency = optimization.latency_ms || {{}};
@@ -1710,12 +1711,13 @@ def _voice_playback_gate_summary(value: Any) -> str:
     if not gate:
         return "not reported"
     muted = "压制中" if gate.get("muted") is True else "未压制"
+    auto_barge = "自动打断开" if gate.get("barge_in_enabled") is True or gate.get("bargeInEnabled") is True else "自动打断关"
     suppressed = gate.get("suppressed_frames") or gate.get("suppressedFrames") or 0
     barge_in = gate.get("barge_in_count") or gate.get("bargeInCount") or 0
     rms = gate.get("last_rms") or gate.get("lastRms")
     peak = gate.get("last_peak") or gate.get("lastPeak")
     return (
-        f"{muted} / 回声帧 {suppressed} / 打断 {barge_in} / "
+        f"{muted} / {auto_barge} / 回声帧 {suppressed} / 打断 {barge_in} / "
         f"rms {_metric_value(rms)} / peak {_metric_value(peak)}"
     )
 

@@ -408,6 +408,7 @@ def test_openclaw_echo_gate_suppresses_playback_echo_and_allows_barge_in() -> No
     gate = OpenClawPlaybackEchoGate(
         playback_sink=sink,
         on_barge_in=lambda payload: barge_ins.append(dict(payload)),
+        barge_in_enabled=True,
         rms_threshold=0.1,
         peak_threshold=0.2,
         consecutive_frames=2,
@@ -424,7 +425,33 @@ def test_openclaw_echo_gate_suppresses_playback_echo_and_allows_barge_in() -> No
     assert len(barge_ins) == 1
     assert readiness["playbackGate"]["suppressedFrames"] == 2
     assert readiness["playbackGate"]["bargeInCount"] == 1
+    assert readiness["playbackGate"]["bargeInEnabled"] is True
     assert readiness["playbackGate"]["lastBargeIn"]["reason"] == "barge-in"
+
+
+def test_openclaw_echo_gate_defaults_to_suppressing_loud_playback_without_barge_in() -> None:
+    sink = FakePlaybackSink()
+    sink.active = True
+    barge_ins: list[dict[str, object]] = []
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: barge_ins.append(dict(payload)),
+        rms_threshold=0.1,
+        peak_threshold=0.2,
+        consecutive_frames=2,
+    )
+
+    loud = AudioFrame(pcm=_pcm_constant(12000), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(loud) is None
+    assert gate.process_capture(loud) is None
+    readiness = gate.readiness()
+
+    assert barge_ins == []
+    assert readiness["vad"]["state"] == "echo_suppression_only"
+    assert readiness["playbackGate"]["bargeInEnabled"] is False
+    assert readiness["playbackGate"]["suppressedFrames"] == 2
+    assert readiness["playbackGate"]["bargeInCount"] == 0
 
 
 def test_openclaw_transport_receive_event_integrates_with_runtime_runner() -> None:

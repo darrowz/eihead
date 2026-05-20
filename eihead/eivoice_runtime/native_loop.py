@@ -42,6 +42,7 @@ class NativeVoiceLoopConfig:
     openclaw_voice: str = "Zephyr"
     openclaw_brain_agent: str = "enabled"
     openclaw_protocol: str = ""
+    openclaw_barge_in_enabled: bool = False
     openclaw_connect_timeout_s: float = 10.0
     openclaw_receive_timeout_s: float = 0.02
     openclaw_session_ready_timeout_s: float = 15.0

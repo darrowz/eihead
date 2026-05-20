@@ -758,6 +758,7 @@ def test_native_voice_runtime_can_select_openclaw_realtime_provider(tmp_path: Pa
                 "      transport_provider: openclaw_realtime",
                 "      ws_url: wss://openclaw.example/ws",
                 "      realtime_provider: openai",
+                "      barge_in_enabled: true",
                 "      fallback_transport_provider: legacy_native",
                 "      session_id: honjia-voice",
             ]
@@ -772,6 +773,7 @@ def test_native_voice_runtime_can_select_openclaw_realtime_provider(tmp_path: Pa
     assert loop_config.transport_provider == "openclaw_realtime"
     assert loop_config.openclaw_ws_url == "wss://openclaw.example/ws"
     assert loop_config.openclaw_provider == "openai"
+    assert loop_config.openclaw_barge_in_enabled is True
     assert loop_config.fallback_transport_provider == "legacy_native"
     assert runtime is not None
 

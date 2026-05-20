@@ -149,6 +149,14 @@ def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopC
             or os.environ.get("EIHEAD_OPENCLAW_WS_PROTOCOL"),
             "",
         ),
+        openclaw_barge_in_enabled=_bool(
+            dialogue_extra.get("barge_in_enabled")
+            or dialogue_extra.get("bargeInEnabled")
+            or dialogue_extra.get("openclaw_barge_in_enabled")
+            or dialogue_extra.get("openclawBargeInEnabled")
+            or os.environ.get("EIHEAD_OPENCLAW_BARGE_IN_ENABLED"),
+            False,
+        ),
         openclaw_connect_timeout_s=_float(
             dialogue_extra.get("connect_timeout_s")
             or dialogue_extra.get("connectTimeoutS")

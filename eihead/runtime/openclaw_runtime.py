@@ -128,19 +128,21 @@ class AplayPcmPlaybackSink:
 
 
 class OpenClawPlaybackEchoGate:
-    """Mute upstream echo during playback while still allowing strong barge-in."""
+    """Mute upstream echo during playback, optionally allowing local barge-in."""
 
     def __init__(
         self,
         *,
         playback_sink: Any,
         on_barge_in: Callable[[Mapping[str, Any]], None],
+        barge_in_enabled: bool = False,
         rms_threshold: float = 0.13,
         peak_threshold: float = 0.2,
         consecutive_frames: int = 2,
     ) -> None:
         self.playback_sink = playback_sink
         self.on_barge_in = on_barge_in
+        self.barge_in_enabled = bool(barge_in_enabled)
         self.rms_threshold = float(rms_threshold)
         self.peak_threshold = float(peak_threshold)
         self.consecutive_frames = max(1, int(consecutive_frames))
@@ -168,6 +170,12 @@ class OpenClawPlaybackEchoGate:
             self._speech_frames = 0
             self._last_muted = False
             return frame
+
+        if not self.barge_in_enabled:
+            self._speech_frames = 0
+            self._suppressed_frames += 1
+            self._last_muted = True
+            return None
 
         if rms >= self.rms_threshold and peak >= self.peak_threshold:
             self._speech_frames += 1
@@ -200,10 +208,15 @@ class OpenClawPlaybackEchoGate:
             "healthy": True,
             "aec": {"enabled": True, "available": True, "state": "playback_gate"},
             "ns": {"enabled": False, "available": False, "state": "disabled"},
-            "vad": {"enabled": True, "available": True, "state": "barge_in_ready"},
+            "vad": {
+                "enabled": self.barge_in_enabled,
+                "available": self.barge_in_enabled,
+                "state": "barge_in_ready" if self.barge_in_enabled else "echo_suppression_only",
+            },
             "loopback": {"enabled": False, "available": False, "state": "disabled"},
             "warnings": [],
             "playbackGate": {
+                "bargeInEnabled": self.barge_in_enabled,
                 "muted": self._last_muted,
                 "suppressedFrames": self._suppressed_frames,
                 "bargeInCount": self._barge_in_count,
@@ -236,6 +249,7 @@ class OpenClawRealtimeRuntime:
         self.audio_frontend = OpenClawPlaybackEchoGate(
             playback_sink=self.playback_sink,
             on_barge_in=self._handle_barge_in,
+            barge_in_enabled=config.openclaw_barge_in_enabled,
             rms_threshold=max(0.08, float(config.vad_rms_threshold)),
             peak_threshold=max(0.18, float(config.vad_rms_threshold) * 1.5),
             consecutive_frames=_barge_in_consecutive_frames(config),
