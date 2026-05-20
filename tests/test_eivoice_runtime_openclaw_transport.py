@@ -5,7 +5,9 @@ import json
 import pytest
 
 from eihead.eivoice_runtime import EiVoiceRuntimeRunner, NoOpAcousticFrontend
+from eihead.eivoice_runtime.native_loop import NativeVoiceLoopConfig
 from eihead.eivoice_runtime.openclaw_transport import OpenClawRealtimeTransport
+from eihead.runtime.openclaw_runtime import OpenClawRealtimeRuntime
 
 
 class ManualClock:
@@ -45,6 +47,12 @@ class EmptyCaptureSource:
     def read_frame(self) -> None:
         return None
 
+    def stop(self) -> None:
+        return None
+
+    def status(self) -> dict[str, object]:
+        return {"running": False}
+
 
 class FakePlaybackSink:
     def __init__(self) -> None:
@@ -55,6 +63,9 @@ class FakePlaybackSink:
 
     def stop(self) -> None:
         return None
+
+    def status(self) -> dict[str, object]:
+        return {"running": False}
 
 
 def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope(
@@ -130,7 +141,7 @@ def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope
     assert transport.status()["connection"]["state"] == "connected"
 
 
-def test_openclaw_transport_receives_audio_delta_and_updates_pong_state() -> None:
+def test_openclaw_transport_receives_audio_delta_and_updates_status() -> None:
     clock = ManualClock(20.0)
     socket = FakeWebSocket(
         incoming=[
@@ -145,7 +156,6 @@ def test_openclaw_transport_receives_audio_delta_and_updates_pong_state() -> Non
                     "channels": 1,
                 }
             ),
-            {"type": "pong"},
         ]
     )
 
@@ -158,12 +168,9 @@ def test_openclaw_transport_receives_audio_delta_and_updates_pong_state() -> Non
     )
 
     transport.connect()
-    clock.advance(10.0)
-    transport.send_ping(uid="user-1", mid="mid-1")
     clock.advance(0.75)
 
     audio_event = transport.receive_event()
-    pong_event = transport.receive_event()
 
     assert socket.timeout == 2.5
     assert audio_event == {
@@ -181,9 +188,9 @@ def test_openclaw_transport_receives_audio_delta_and_updates_pong_state() -> Non
             },
         },
     }
-    assert pong_event == {"contentType": "PONG", "content": {"eventType": "PONG"}}
-    assert transport.status()["heartbeat"]["awaiting_pong"] is False
-    assert transport.status()["heartbeat"]["latency_ms"] == 750
+    status = transport.status()
+    assert status["openclaw_ws"]["session_state"] == "speaking"
+    assert status["openclaw_ws"]["last_rx_ms"] == 20750
 
 
 def test_openclaw_transport_send_event_without_connection_records_error() -> None:
@@ -239,3 +246,37 @@ def test_openclaw_transport_receive_event_integrates_with_runtime_runner() -> No
     assert frame.pcm == b"BASE64"
     assert frame.sequence == 4
     assert frame.duration_ms == 20
+
+
+def test_openclaw_runtime_retries_after_connect_failure() -> None:
+    clock = ManualClock(100.0)
+    sockets = [FakeWebSocket(incoming=[{"type": "session.ready", "sessionId": "session-2"}])]
+    connect_attempts = 0
+
+    def _connect(url: str, *, header: list[str], timeout: float) -> FakeWebSocket:
+        nonlocal connect_attempts
+        connect_attempts += 1
+        if connect_attempts == 1:
+            raise TimeoutError("first connect failed")
+        return sockets.pop(0)
+
+    def _transport_factory(config: NativeVoiceLoopConfig) -> OpenClawRealtimeTransport:
+        return OpenClawRealtimeTransport(
+            url=config.openclaw_ws_url,
+            token="token",
+            websocket_factory=_connect,
+            clock=clock,
+        )
+
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(openclaw_ws_url="wss://openclaw.example/realtime"),
+        transport_factory=_transport_factory,
+        capture_source=EmptyCaptureSource(),
+        playback_sink=FakePlaybackSink(),
+    )
+
+    assert runtime._ensure_connected() is False
+    clock.advance(1.1)
+    assert runtime._ensure_connected() is True
+    assert connect_attempts == 2
+    assert runtime.status()["openclaw_ws"]["connected"] is True

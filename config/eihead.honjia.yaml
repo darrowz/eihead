@@ -88,7 +88,7 @@ capabilities:
       enabled: true
       provider: eibrain_subprocess
       transport_provider: ${EIHEAD_VOICE_TRANSPORT_PROVIDER:-legacy_native}
-      fallback_transport_provider: ${EIHEAD_VOICE_FALLBACK_PROVIDER:-legacy_native}
+      fallback_transport_provider: ${EIHEAD_VOICE_FALLBACK_PROVIDER:-}
       ws_url: ${EIHEAD_OPENCLAW_WS_URL:-ws://100.110.190.107:18789/voiceclaw/realtime}
       token_env_var: ${EIHEAD_OPENCLAW_TOKEN_ENV_VAR:-OPENCLAW_REALTIME_TOKEN}
       ws_protocol: ${EIHEAD_OPENCLAW_WS_PROTOCOL:-openclaw.realtime.v1}

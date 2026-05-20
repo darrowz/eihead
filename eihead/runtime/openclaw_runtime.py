@@ -243,20 +243,48 @@ class OpenClawRealtimeRuntime:
             with self._lock:
                 self._last_error = "OpenClaw realtime ws_url is missing"
             return
-        try:
-            self.transport.connect()
-            while not self._stop_event.is_set():
-                if hasattr(self.transport, "heartbeat_due") and self.transport.heartbeat_due():
-                    self.transport.send_ping(uid=self.config.dialogue_actor_id, mid=self.config.dialogue_session_id)
-                self.transport.check_heartbeat()
+        while not self._stop_event.is_set():
+            if not self._ensure_connected():
+                time.sleep(0.1)
+                continue
+            try:
                 result = self.runner.step_once()
                 if not any(result.values()):
                     time.sleep(0.005)
+            except BaseException as exc:
+                self._record_runtime_error(exc)
+        self.capture_source.stop()
+
+    def _ensure_connected(self) -> bool:
+        if self.transport is None:
+            return False
+        status = self.transport.status()
+        state = str(_mapping(status.get("connection")).get("state") or status.get("state") or "")
+        if state == "connected":
+            return True
+        if state == "reconnect_wait" and not self.transport.ready_to_reconnect():
+            return False
+        try:
+            self.transport.reconnect() if state == "reconnect_wait" else self.transport.connect()
+            with self._lock:
+                self._last_error = ""
+            return True
         except BaseException as exc:
             with self._lock:
                 self._last_error = str(exc)
-        finally:
-            self.capture_source.stop()
+            return False
+
+    def _record_runtime_error(self, exc: BaseException) -> None:
+        with self._lock:
+            self._last_error = str(exc)
+        if self.transport is None:
+            return
+        status = self.transport.status()
+        state = str(_mapping(status.get("connection")).get("state") or status.get("state") or "")
+        if state != "reconnect_wait":
+            self.transport.record_error(exc, context="runtime_loop")
+            self.transport.close("runtime_error")
+            self.transport.schedule_reconnect("runtime_error")
 
     def _openclaw_ws_status(self, runtime: Mapping[str, Any]) -> dict[str, Any]:
         transport = _mapping(runtime.get("transport"))

@@ -78,11 +78,16 @@ def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopC
         )
         or os.environ.get("EIHEAD_VOICE_TRANSPORT_PROVIDER")
     )
-    fallback_transport_provider = _normalize_transport_provider(
+    fallback_transport_provider_raw = (
         dialogue_extra.get("fallback_transport_provider")
         or dialogue_extra.get("fallbackTransportProvider")
         or os.environ.get("EIHEAD_VOICE_FALLBACK_PROVIDER")
-        or "legacy_native"
+        or ""
+    )
+    fallback_transport_provider = (
+        _normalize_transport_provider(fallback_transport_provider_raw)
+        if _text(fallback_transport_provider_raw, "").strip()
+        else ""
     )
 
     return NativeVoiceLoopConfig(
