@@ -289,8 +289,11 @@ def _voice_payload_from_eivoice_runtime(status: Mapping[str, Any]) -> dict[str, 
         "url": _first_text(openclaw_ws_panel.get("url")),
         "last_error": _first_text(openclaw_ws_panel.get("lastError")),
         "last_rx_ms": _float_or_none(openclaw_ws_panel.get("lastRxMs")),
+        "last_audio_rx_ms": _float_or_none(openclaw_ws_panel.get("lastAudioRxMs")),
         "last_tx_ms": _float_or_none(openclaw_ws_panel.get("lastTxMs")),
         "session_state": _first_text(openclaw_ws_panel.get("sessionState"), "unknown"),
+        "reported_session_state": _first_text(openclaw_ws_panel.get("reportedSessionState")),
+        "latency_ms": _json_mapping(_mapping_from_keys(runtime.get("openclaw_ws"), "latency_ms", "latencyMs") or {}),
     }
     return {
         "eivoice_runtime": {
@@ -1404,20 +1407,31 @@ def _voice_chain_payload(
             _first_value(data, "last_reply"),
         ),
         "latency_ms": latency_ms,
-        "steps": [
-            {
-                "key": key,
-                "label": label,
-                "latency_ms": latency_ms.get(key),
-            }
-            for key, label in (
-                ("listen_asr", "ASR 识别"),
-                ("dialogue", "脑端回复"),
-                ("speak", "TTS 播放"),
-                ("total", "总耗时"),
-            )
-        ],
+        "steps": _voice_chain_steps(latency_ms),
     }
+
+
+def _voice_chain_steps(latency_ms: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "key": key,
+            "label": label,
+            "latency_ms": latency_ms.get(key),
+        }
+        for key, label in (
+            ("listen_asr", "ASR 识别"),
+            ("dialogue", "脑端回复"),
+            ("speak", "TTS 播放"),
+            ("total", "总耗时"),
+            ("asr_to_first_text", "ASR 到首文本"),
+            ("asr_to_first_audio", "ASR 到首音频"),
+            ("first_text_to_first_audio", "首文本到首音频"),
+            ("audio_receive_span", "音频接收持续"),
+            ("audio_gap_max", "最大音频间隔"),
+            ("audio_chunks", "音频块数量"),
+        )
+        if latency_ms.get(key) not in (None, "")
+    ]
 
 
 def _openclaw_ws_payload(
@@ -1445,8 +1459,13 @@ def _openclaw_ws_payload(
         "url": _first_text(_first_value(explicit, "url")),
         "last_error": _first_text(_first_value(explicit, "last_error", "lastError")),
         "last_rx_ms": _float_or_none(_first_value(explicit, "last_rx_ms", "lastRxMs")),
+        "last_audio_rx_ms": _float_or_none(_first_value(explicit, "last_audio_rx_ms", "lastAudioRxMs")),
         "last_tx_ms": _float_or_none(_first_value(explicit, "last_tx_ms", "lastTxMs")),
         "session_state": _first_text(_first_value(explicit, "session_state", "sessionState")),
+        "reported_session_state": _first_text(
+            _first_value(explicit, "reported_session_state", "reportedSessionState")
+        ),
+        "latency_ms": dict(_mapping_from_keys(explicit, "latency_ms", "latencyMs") or {}),
     }
 
 

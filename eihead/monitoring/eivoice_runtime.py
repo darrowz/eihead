@@ -240,6 +240,7 @@ def _normalize_playback_gate(value: Any) -> dict[str, Any]:
     last_barge_in = _mapping(gate.get("last_barge_in") or gate.get("lastBargeIn"))
     return {
         "bargeInEnabled": bool(gate.get("barge_in_enabled") or gate.get("bargeInEnabled")),
+        "outputActive": bool(gate.get("output_active") or gate.get("outputActive")),
         "muted": bool(gate.get("muted")),
         "suppressedFrames": _number(gate.get("suppressed_frames") or gate.get("suppressedFrames"), default=0),
         "bargeInCount": _number(gate.get("barge_in_count") or gate.get("bargeInCount"), default=0),
@@ -341,10 +342,17 @@ def _normalize_openclaw_ws(runtime: Mapping[str, Any], transport: Mapping[str, A
         "lastRxMs": _number(payload.get("last_rx_ms") or payload.get("lastRxMs"), default=0)
         if payload.get("last_rx_ms") is not None or payload.get("lastRxMs") is not None
         else None,
+        "lastAudioRxMs": _number(payload.get("last_audio_rx_ms") or payload.get("lastAudioRxMs"), default=0)
+        if payload.get("last_audio_rx_ms") is not None or payload.get("lastAudioRxMs") is not None
+        else None,
         "lastTxMs": _number(payload.get("last_tx_ms") or payload.get("lastTxMs"), default=0)
         if payload.get("last_tx_ms") is not None or payload.get("lastTxMs") is not None
         else None,
         "sessionState": _text(payload.get("session_state") or payload.get("sessionState"), default="unknown"),
+        "reportedSessionState": _text(
+            payload.get("reported_session_state") or payload.get("reportedSessionState"),
+            default="",
+        ),
     }
 
 

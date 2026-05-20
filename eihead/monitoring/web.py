@@ -1184,11 +1184,12 @@ def _render_lightweight_index(timestamp: float) -> str:
       if (!gate || Object.keys(gate).length === 0) return '未上报';
       const muted = gate.muted === true ? '压制中' : '未压制';
       const autoBarge = gate.bargeInEnabled === true || gate.barge_in_enabled === true ? '自动打断开' : '自动打断关';
+      const outputActive = gate.outputActive === true || gate.output_active === true ? '输出中' : '输出空闲';
       const suppressed = first(gate.suppressedFrames, gate.suppressed_frames, 0);
       const barge = first(gate.bargeInCount, gate.barge_in_count, 0);
       const rms = first(gate.lastRms, gate.last_rms);
       const peak = first(gate.lastPeak, gate.last_peak);
-      return `${{muted}} / ${{autoBarge}} / 回声帧=${{metric(suppressed)}} / 打断=${{metric(barge)}} / rms=${{metric(rms)}} / peak=${{metric(peak)}}`;
+      return `${{muted}} / ${{outputActive}} / ${{autoBarge}} / 回声帧=${{metric(suppressed)}} / 打断=${{metric(barge)}} / rms=${{metric(rms)}} / peak=${{metric(peak)}}`;
     }}
     function optimizationSummary(optimization) {{
       const latency = optimization.latency_ms || {{}};
@@ -1297,6 +1298,12 @@ def _render_lightweight_index(timestamp: float) -> str:
         ['脑端回复', metric(voiceChainLatency.dialogue, 'ms')],
         ['TTS 播放', metric(voiceChainLatency.speak, 'ms')],
         ['总耗时', metric(voiceChainLatency.total, 'ms')],
+        ['ASR 到首文本', metric(voiceChainLatency.asr_to_first_text, 'ms')],
+        ['ASR 到首音频', metric(voiceChainLatency.asr_to_first_audio, 'ms')],
+        ['首文本到首音频', metric(voiceChainLatency.first_text_to_first_audio, 'ms')],
+        ['音频接收持续', metric(voiceChainLatency.audio_receive_span, 'ms')],
+        ['最大音频间隔', metric(voiceChainLatency.audio_gap_max, 'ms')],
+        ['音频块数量', metric(voiceChainLatency.audio_chunks)],
         ['最后 ASR', voiceChain.last_asr_text],
         ['最后 TTS', voiceChain.last_tts_text],
       ]);
@@ -1712,12 +1719,13 @@ def _voice_playback_gate_summary(value: Any) -> str:
         return "not reported"
     muted = "压制中" if gate.get("muted") is True else "未压制"
     auto_barge = "自动打断开" if gate.get("barge_in_enabled") is True or gate.get("bargeInEnabled") is True else "自动打断关"
+    output_active = "输出中" if gate.get("output_active") is True or gate.get("outputActive") is True else "输出空闲"
     suppressed = gate.get("suppressed_frames") or gate.get("suppressedFrames") or 0
     barge_in = gate.get("barge_in_count") or gate.get("bargeInCount") or 0
     rms = gate.get("last_rms") or gate.get("lastRms")
     peak = gate.get("last_peak") or gate.get("lastPeak")
     return (
-        f"{muted} / {auto_barge} / 回声帧 {suppressed} / 打断 {barge_in} / "
+        f"{muted} / {output_active} / {auto_barge} / 回声帧 {suppressed} / 打断 {barge_in} / "
         f"rms {_metric_value(rms)} / peak {_metric_value(peak)}"
     )
 

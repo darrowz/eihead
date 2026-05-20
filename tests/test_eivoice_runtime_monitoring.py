@@ -120,6 +120,7 @@ def test_audio_frontend_panel_preserves_loopback_route_and_last_capture() -> Non
                 "aec_status": "unavailable",
                 "playback_gate": {
                     "barge_in_enabled": False,
+                    "output_active": True,
                     "muted": True,
                     "suppressed_frames": 7,
                     "barge_in_count": 1,
@@ -161,6 +162,7 @@ def test_audio_frontend_panel_preserves_loopback_route_and_last_capture() -> Non
     assert panel["audioFrontend"]["aecStatus"] == "unavailable"
     assert panel["audioFrontend"]["playbackGate"]["muted"] is True
     assert panel["audioFrontend"]["playbackGate"]["bargeInEnabled"] is False
+    assert panel["audioFrontend"]["playbackGate"]["outputActive"] is True
     assert panel["audioFrontend"]["playbackGate"]["suppressedFrames"] == 7
     assert panel["audioFrontend"]["playbackGate"]["bargeInCount"] == 1
     assert panel["audioFrontend"]["playbackGate"]["lastRms"] == 0.12
@@ -272,8 +274,10 @@ def test_openclaw_ws_status_is_exposed_in_runtime_panel() -> None:
         "url": "wss://openclaw.example/ws",
         "lastError": "",
         "lastRxMs": 18,
+        "lastAudioRxMs": None,
         "lastTxMs": 9,
         "sessionState": "streaming",
+        "reportedSessionState": "",
     }
 
 
@@ -729,8 +733,11 @@ def test_web_voice_realtime_shows_openclaw_ws_status() -> None:
         "url": "wss://openclaw.example/ws",
         "last_error": "auth_failed",
         "last_rx_ms": None,
+        "last_audio_rx_ms": None,
         "last_tx_ms": 44,
         "session_state": "auth_failed",
+        "reported_session_state": "",
+        "latency_ms": {},
     }
     assert "wss://openclaw.example/ws" in body
     assert "auth_failed" in body

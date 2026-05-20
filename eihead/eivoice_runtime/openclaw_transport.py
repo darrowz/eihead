@@ -94,9 +94,16 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         self._ws: Any | None = None
         self._session_state = "idle"
         self._last_rx_ms: int | None = None
+        self._last_audio_rx_ms: int | None = None
         self._last_tx_ms: int | None = None
         self._last_user_transcript = ""
         self._last_assistant_transcript = ""
+        self._last_user_transcript_ms: int | None = None
+        self._first_assistant_transcript_ms: int | None = None
+        self._last_assistant_transcript_ms: int | None = None
+        self._first_audio_rx_ms: int | None = None
+        self._audio_chunk_count = 0
+        self._audio_gap_max_ms = 0
         self._session_id = ""
         self._relay_session_id = ""
         self._request_id = 0
@@ -261,11 +268,13 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
             "url": self.url,
             "last_error": _error_message(status.get("last_error")),
             "last_rx_ms": self._last_rx_ms,
+            "last_audio_rx_ms": self._last_audio_rx_ms,
             "last_tx_ms": self._last_tx_ms,
             "session_state": self._session_state,
             "session_id": self._session_id,
             "last_user_transcript": self._last_user_transcript,
             "last_assistant_transcript": self._last_assistant_transcript,
+            "latency_ms": self._latency_status(),
         }
         return status
 
@@ -437,13 +446,25 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
                 role = str(relay_event.get("role") or "").strip()
                 text = str(relay_event.get("text") or "").strip()
                 if role == "user" and text:
+                    if text != self._last_user_transcript:
+                        self._reset_turn_latency(now_ms)
                     self._last_user_transcript = text
+                    self._last_user_transcript_ms = now_ms
                 if role == "assistant" and text:
+                    if self._first_assistant_transcript_ms is None:
+                        self._first_assistant_transcript_ms = now_ms
                     self._last_assistant_transcript = text
+                    self._last_assistant_transcript_ms = now_ms
         elif message_type:
             self._session_state = _session_state_from_message(message_type, self._session_state)
         if event is not None and _event_type(event) in {"AUDIO_CHUNK", "AUDIO"}:
+            if self._first_audio_rx_ms is None:
+                self._first_audio_rx_ms = now_ms
+            if self._last_audio_rx_ms is not None:
+                self._audio_gap_max_ms = max(self._audio_gap_max_ms, now_ms - self._last_audio_rx_ms)
+            self._audio_chunk_count += 1
             self._last_rx_ms = now_ms
+            self._last_audio_rx_ms = now_ms
         elif message_type:
             self._last_rx_ms = now_ms
 
@@ -463,6 +484,31 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         except Exception:
             pass
         self._relay_session_id = ""
+
+    def _reset_turn_latency(self, now_ms: int) -> None:
+        self._last_user_transcript_ms = now_ms
+        self._first_assistant_transcript_ms = None
+        self._last_assistant_transcript_ms = None
+        self._first_audio_rx_ms = None
+        self._last_audio_rx_ms = None
+        self._last_assistant_transcript = ""
+        self._audio_chunk_count = 0
+        self._audio_gap_max_ms = 0
+
+    def _latency_status(self) -> dict[str, Any]:
+        return {
+            "last_user_transcript_ms": self._last_user_transcript_ms,
+            "first_assistant_transcript_ms": self._first_assistant_transcript_ms,
+            "last_assistant_transcript_ms": self._last_assistant_transcript_ms,
+            "first_audio_rx_ms": self._first_audio_rx_ms,
+            "last_audio_rx_ms": self._last_audio_rx_ms,
+            "audio_chunk_count": self._audio_chunk_count,
+            "audio_gap_max_ms": self._audio_gap_max_ms,
+            "asr_to_first_text_ms": _delta_ms(self._last_user_transcript_ms, self._first_assistant_transcript_ms),
+            "asr_to_first_audio_ms": _delta_ms(self._last_user_transcript_ms, self._first_audio_rx_ms),
+            "first_text_to_first_audio_ms": _delta_ms(self._first_assistant_transcript_ms, self._first_audio_rx_ms),
+            "audio_receive_span_ms": _delta_ms(self._first_audio_rx_ms, self._last_audio_rx_ms),
+        }
 
 
 def default_openclaw_encode_event(event: Mapping[str, Any]) -> dict[str, Any]:
@@ -677,6 +723,12 @@ def _optional_int(*values: Any) -> int | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _delta_ms(start_ms: int | None, end_ms: int | None) -> int | None:
+    if start_ms is None or end_ms is None:
+        return None
+    return max(0, int(end_ms) - int(start_ms))
 
 
 def _resolve_device_identity(

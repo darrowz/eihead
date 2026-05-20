@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from array import array
 import json
+import time
 
 import pytest
 
@@ -54,6 +55,17 @@ class FakeWebSocket:
 class EmptyCaptureSource:
     def read_frame(self) -> None:
         return None
+
+    def stop(self) -> None:
+        return None
+
+    def status(self) -> dict[str, object]:
+        return {"running": False}
+
+
+class RaisingCaptureSource:
+    def read_frame(self) -> None:
+        raise AssertionError("capture should not run while output is active")
 
     def stop(self) -> None:
         return None
@@ -401,6 +413,24 @@ def test_openclaw_playback_sink_reports_active_audio_window() -> None:
     assert sink.status()["active"] is False
 
 
+def test_openclaw_runtime_uses_long_playback_grace_to_prevent_speaker_echo() -> None:
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(
+            openclaw_ws_url="wss://openclaw.example/realtime",
+            playback_echo_cooldown_ms=350,
+        ),
+        transport_factory=lambda config: OpenClawRealtimeTransport(
+            url=config.openclaw_ws_url,
+            token="token",
+            websocket_factory=lambda url, *, header, timeout: FakeWebSocket(),
+        ),
+        capture_source=EmptyCaptureSource(),
+    )
+
+    assert isinstance(runtime.playback_sink, AplayPcmPlaybackSink)
+    assert runtime.playback_sink.active_grace_s >= 2.5
+
+
 def test_openclaw_echo_gate_suppresses_playback_echo_and_allows_barge_in() -> None:
     sink = FakePlaybackSink()
     sink.active = True
@@ -451,6 +481,26 @@ def test_openclaw_echo_gate_defaults_to_suppressing_loud_playback_without_barge_
     assert readiness["vad"]["state"] == "echo_suppression_only"
     assert readiness["playbackGate"]["bargeInEnabled"] is False
     assert readiness["playbackGate"]["suppressedFrames"] == 2
+    assert readiness["playbackGate"]["bargeInCount"] == 0
+
+
+def test_openclaw_echo_gate_suppresses_when_remote_session_is_speaking() -> None:
+    sink = FakePlaybackSink()
+    sink.active = False
+    remote_speaking = True
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        is_output_active=lambda: remote_speaking,
+    )
+
+    loud = AudioFrame(pcm=_pcm_constant(12000), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(loud) is None
+    readiness = gate.readiness()
+
+    assert readiness["playbackGate"]["outputActive"] is True
+    assert readiness["playbackGate"]["suppressedFrames"] == 1
     assert readiness["playbackGate"]["bargeInCount"] == 0
 
 
@@ -509,6 +559,68 @@ def test_openclaw_transport_receive_event_integrates_with_runtime_runner() -> No
     assert frame.pcm == b"BASE64"
     assert frame.sequence == 0
     assert frame.duration_ms == 60
+    assert transport.status()["openclaw_ws"]["last_audio_rx_ms"] is not None
+
+
+def test_openclaw_runtime_prioritizes_output_without_blocking_on_capture() -> None:
+    socket = FakeWebSocket(
+        incoming=[
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {"type": "res", "id": "1", "ok": True, "payload": {"auth": {"role": "operator"}}},
+            {
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {
+                    "provider": "openai",
+                    "transport": "gateway-relay",
+                    "relaySessionId": "relay-1",
+                    "audio": {
+                        "inputEncoding": "pcm16",
+                        "inputSampleRateHz": 24000,
+                        "outputEncoding": "pcm16",
+                        "outputSampleRateHz": 24000,
+                    },
+                },
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
+            {
+                "type": "event",
+                "event": "talk.event",
+                "payload": {
+                    "relaySessionId": "relay-1",
+                    "type": "audio",
+                    "audioBase64": "QkFTRTY0",
+                },
+            },
+        ]
+    )
+
+    def _transport_factory(config: NativeVoiceLoopConfig) -> OpenClawRealtimeTransport:
+        transport = OpenClawRealtimeTransport(
+            url=config.openclaw_ws_url,
+            token="token",
+            websocket_factory=lambda url, *, header, timeout: socket,
+        )
+        return transport
+
+    playback = FakePlaybackSink()
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(openclaw_ws_url="wss://openclaw.example/realtime"),
+        transport_factory=_transport_factory,
+        capture_source=RaisingCaptureSource(),
+        playback_sink=playback,
+    )
+
+    assert runtime._ensure_connected() is True
+    assert runtime.transport is not None
+    runtime.transport._session_state = "speaking"
+    runtime.transport._last_audio_rx_ms = int(time.monotonic() * 1000)
+
+    result = runtime._step_runtime_once()
+
+    assert result == {"playback": True, "decode": True, "receive": True}
+    assert len(playback.played) == 1
 
 
 def test_openclaw_runtime_retries_after_connect_failure() -> None:

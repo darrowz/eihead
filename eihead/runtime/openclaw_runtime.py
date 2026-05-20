@@ -135,6 +135,7 @@ class OpenClawPlaybackEchoGate:
         *,
         playback_sink: Any,
         on_barge_in: Callable[[Mapping[str, Any]], None],
+        is_output_active: Callable[[], bool] | None = None,
         barge_in_enabled: bool = False,
         rms_threshold: float = 0.13,
         peak_threshold: float = 0.2,
@@ -142,6 +143,7 @@ class OpenClawPlaybackEchoGate:
     ) -> None:
         self.playback_sink = playback_sink
         self.on_barge_in = on_barge_in
+        self.is_output_active = is_output_active
         self.barge_in_enabled = bool(barge_in_enabled)
         self.rms_threshold = float(rms_threshold)
         self.peak_threshold = float(peak_threshold)
@@ -152,6 +154,7 @@ class OpenClawPlaybackEchoGate:
         self._last_rms = 0.0
         self._last_peak = 0.0
         self._last_muted = False
+        self._last_output_active = False
         self._last_barge_in: dict[str, Any] | None = None
 
     def process_capture(
@@ -163,7 +166,9 @@ class OpenClawPlaybackEchoGate:
         _ = playback_reference
         rms, peak = _pcm_rms_peak(frame.pcm or frame.payload, channels=frame.channels)
         playback = _mapping(self.playback_sink.status() if hasattr(self.playback_sink, "status") else {})
-        playback_active = bool(playback.get("active"))
+        remote_output_active = bool(self.is_output_active()) if self.is_output_active is not None else False
+        playback_active = bool(playback.get("active") or remote_output_active)
+        self._last_output_active = playback_active
         self._last_rms = round(rms, 5)
         self._last_peak = round(peak, 5)
         if not playback_active:
@@ -217,6 +222,7 @@ class OpenClawPlaybackEchoGate:
             "warnings": [],
             "playbackGate": {
                 "bargeInEnabled": self.barge_in_enabled,
+                "outputActive": self._last_output_active,
                 "muted": self._last_muted,
                 "suppressedFrames": self._suppressed_frames,
                 "bargeInCount": self._barge_in_count,
@@ -234,6 +240,8 @@ class OpenClawPlaybackEchoGate:
 class OpenClawRealtimeRuntime:
     """Runtime adapter that bridges honjia microphone/playback to VoiceClaw."""
 
+    OUTPUT_AUDIO_GRACE_S = 1.2
+
     def __init__(
         self,
         config: NativeVoiceLoopConfig,
@@ -244,11 +252,15 @@ class OpenClawRealtimeRuntime:
     ) -> None:
         self.config = config
         self.capture_source = capture_source or ArecordAudioFrameSource(config)
-        self.playback_sink = playback_sink or AplayPcmPlaybackSink(device=config.speaker_device)
+        self.playback_sink = playback_sink or AplayPcmPlaybackSink(
+            device=config.speaker_device,
+            active_grace_s=_playback_grace_s(config),
+        )
         self.transport = (transport_factory or _default_transport_factory)(config) if config.openclaw_ws_url else None
         self.audio_frontend = OpenClawPlaybackEchoGate(
             playback_sink=self.playback_sink,
             on_barge_in=self._handle_barge_in,
+            is_output_active=self._is_remote_output_active,
             barge_in_enabled=config.openclaw_barge_in_enabled,
             rms_threshold=max(0.08, float(config.vad_rms_threshold)),
             peak_threshold=max(0.18, float(config.vad_rms_threshold) * 1.5),
@@ -390,12 +402,38 @@ class OpenClawRealtimeRuntime:
                 time.sleep(0.1)
                 continue
             try:
-                result = self.runner.step_once()
+                result = self._step_runtime_once()
                 if not any(result.values()):
                     time.sleep(0.005)
             except BaseException as exc:
                 self._record_runtime_error(exc)
         self.capture_source.stop()
+
+    def _step_runtime_once(self) -> dict[str, bool]:
+        if self.runner is None:
+            return {}
+        if self._is_output_phase():
+            return self._step_output_once()
+        return self.runner.step_once()
+
+    def _step_output_once(self) -> dict[str, bool]:
+        if self.runner is None:
+            return {}
+        result = {
+            "playback": self.runner.step_playback(),
+            "decode": self.runner.step_decode(),
+            "receive": self.runner.step_receive(),
+        }
+        if result["receive"]:
+            result["decode"] = self.runner.step_decode() or result["decode"]
+            result["playback"] = self.runner.step_playback() or result["playback"]
+        return result
+
+    def _is_output_phase(self) -> bool:
+        playback = _mapping(self.playback_sink.status() if hasattr(self.playback_sink, "status") else {})
+        if playback.get("active"):
+            return True
+        return self._is_remote_output_active()
 
     def _ensure_connected(self) -> bool:
         if self.transport is None:
@@ -439,17 +477,37 @@ class OpenClawRealtimeRuntime:
                 "ts": time.time(),
             }
 
+    def _is_remote_output_active(self) -> bool:
+        if self.transport is None:
+            return False
+        payload = _mapping(self.transport.status().get("openclaw_ws"))
+        if str(payload.get("session_state") or "").lower() != "speaking":
+            return False
+        return _recent_audio_active(payload, grace_s=self.OUTPUT_AUDIO_GRACE_S)
+
     def _openclaw_ws_status(self, runtime: Mapping[str, Any]) -> dict[str, Any]:
         transport = _mapping(runtime.get("transport"))
         payload = _mapping(runtime.get("openclaw_ws")) or _mapping(transport.get("openclaw_ws"))
         if payload:
+            raw_session_state = str(payload.get("session_state") or "unknown")
+            playback = _mapping(self.playback_sink.status() if hasattr(self.playback_sink, "status") else {})
+            session_state = raw_session_state
+            if (
+                raw_session_state.lower() == "speaking"
+                and not playback.get("active")
+                and not _recent_audio_active(payload, grace_s=self.OUTPUT_AUDIO_GRACE_S)
+            ):
+                session_state = "ready"
             result = {
                 "connected": bool(payload.get("connected")),
                 "url": str(payload.get("url") or self.config.openclaw_ws_url),
                 "last_error": str(payload.get("last_error") or self._last_error),
                 "last_rx_ms": payload.get("last_rx_ms"),
+                "last_audio_rx_ms": payload.get("last_audio_rx_ms"),
                 "last_tx_ms": payload.get("last_tx_ms"),
-                "session_state": str(payload.get("session_state") or "unknown"),
+                "latency_ms": dict(_mapping(payload.get("latency_ms"))),
+                "session_state": session_state,
+                "reported_session_state": raw_session_state,
                 "session_id": str(payload.get("session_id") or ""),
                 "last_user_transcript": str(payload.get("last_user_transcript") or ""),
                 "last_assistant_transcript": str(payload.get("last_assistant_transcript") or ""),
@@ -470,8 +528,11 @@ class OpenClawRealtimeRuntime:
             "url": self.config.openclaw_ws_url,
             "last_error": self._last_error,
             "last_rx_ms": None,
+            "last_audio_rx_ms": None,
             "last_tx_ms": None,
+            "latency_ms": {},
             "session_state": session_state,
+            "reported_session_state": session_state,
             "session_id": "",
             "last_user_transcript": "",
             "last_assistant_transcript": "",
@@ -514,6 +575,7 @@ class OpenClawRealtimeRuntime:
         }
 
     def _dialogue_status(self, *, running: bool, openclaw_ws: Mapping[str, Any]) -> dict[str, Any]:
+        stage_latency = _openclaw_stage_latency(openclaw_ws)
         return {
             "enabled": True,
             "running": running,
@@ -521,6 +583,7 @@ class OpenClawRealtimeRuntime:
             "last_status": str(openclaw_ws.get("session_state") or "unknown"),
             "last_transcript": str(openclaw_ws.get("last_user_transcript") or ""),
             "last_reply": str(openclaw_ws.get("last_assistant_transcript") or ""),
+            "last_stage_latency_ms": stage_latency,
             "last_error": str(openclaw_ws.get("last_error") or ""),
             "conversation_active": running,
             "wake_word_required": self.config.wake_word_required,
@@ -562,6 +625,7 @@ class OpenClawRealtimeRuntime:
             "running": running,
             "transport": dict(transport),
             "openclaw_ws": dict(openclaw_ws),
+            "latency_ms": dict(_mapping(openclaw_ws.get("latency_ms"))),
             "capture": self.capture_source.status(),
             "barge_in": dict(self._last_barge_in) if self._last_barge_in else None,
         }
@@ -626,6 +690,40 @@ def _empty_runtime_status() -> dict[str, Any]:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _recent_audio_active(payload: Mapping[str, Any], *, grace_s: float) -> bool:
+    last_audio_rx_ms = _float_or_none(payload.get("last_audio_rx_ms") or payload.get("lastAudioRxMs"))
+    if last_audio_rx_ms is None:
+        return False
+    now_ms = time.monotonic() * 1000.0
+    return (now_ms - last_audio_rx_ms) <= max(0.0, float(grace_s)) * 1000.0
+
+
+def _playback_grace_s(config: NativeVoiceLoopConfig) -> float:
+    configured = max(0.0, float(config.playback_echo_cooldown_ms) / 1000.0)
+    return max(2.5, configured)
+
+
+def _openclaw_stage_latency(openclaw_ws: Mapping[str, Any]) -> dict[str, Any]:
+    latency = _mapping(openclaw_ws.get("latency_ms"))
+    return {
+        "asr_to_first_text": latency.get("asr_to_first_text_ms"),
+        "asr_to_first_audio": latency.get("asr_to_first_audio_ms"),
+        "first_text_to_first_audio": latency.get("first_text_to_first_audio_ms"),
+        "audio_receive_span": latency.get("audio_receive_span_ms"),
+        "audio_gap_max": latency.get("audio_gap_max_ms"),
+        "audio_chunks": latency.get("audio_chunk_count"),
+    }
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _barge_in_consecutive_frames(config: NativeVoiceLoopConfig) -> int:
