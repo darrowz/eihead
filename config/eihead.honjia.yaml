@@ -58,10 +58,10 @@ capabilities:
     asr:
       enabled: true
       provider: sherpa_onnx
-      model: sherpa-onnx-streaming
-      model_dir: /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
-      model_type: lstm
-      vad_rms_threshold: 0.18
+      model: sense-voice
+      model_dir: /mnt/ssd/models/sense-voice
+      model_type: sense_voice
+      vad_rms_threshold: 0.12
       vad_min_voice_ms: 720
       vad_end_silence_ms: 1000
       max_utterance_ms: 5000

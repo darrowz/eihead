@@ -221,18 +221,22 @@ class SherpaOnnxWindowTranscriber:
         started = time.perf_counter()
         recognizer = self._get_recognizer()
         stream = recognizer.create_stream()
+        ready_driven = hasattr(recognizer, "is_ready")
         for frame in frames:
             samples = _pcm_to_float_samples(frame.pcm, channels=frame.channels)
             if not samples:
                 continue
             stream.accept_waveform(sample_rate=self.sample_rate, waveform=_waveform_buffer(samples))
-            while hasattr(recognizer, "is_ready") and recognizer.is_ready(stream):
+            while ready_driven and recognizer.is_ready(stream):
                 recognizer.decode_stream(stream)
         tail_padding = [0.0] * int(self.sample_rate * 0.6)
         stream.accept_waveform(sample_rate=self.sample_rate, waveform=_waveform_buffer(tail_padding))
         if hasattr(stream, "input_finished"):
             stream.input_finished()
-        while hasattr(recognizer, "is_ready") and recognizer.is_ready(stream):
+        if ready_driven:
+            while recognizer.is_ready(stream):
+                recognizer.decode_stream(stream)
+        else:
             recognizer.decode_stream(stream)
         result = recognizer.get_result(stream) if hasattr(recognizer, "get_result") else getattr(stream, "result", None)
         self._last_decode_ms = round((time.perf_counter() - started) * 1000.0, 2)
@@ -257,8 +261,23 @@ class SherpaOnnxWindowTranscriber:
             import sherpa_onnx
 
             model_dir = Path(self.model_dir).expanduser()
+            tokens = model_dir / "tokens.txt"
+            sense_voice_model = _first_existing_path(
+                model_dir / "model.int8.onnx",
+                model_dir / "model.onnx",
+            )
+            if sense_voice_model is not None and tokens.exists():
+                self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                    model=str(sense_voice_model),
+                    tokens=str(tokens),
+                    sample_rate=self.sample_rate,
+                    language="zh",
+                    use_itn=True,
+                )
+                self._load_error = ""
+                return self._recognizer
             self._recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
-                tokens=str(model_dir / "tokens.txt"),
+                tokens=str(tokens),
                 encoder=str(model_dir / "encoder.onnx"),
                 decoder=str(model_dir / "decoder.onnx"),
                 joiner=str(model_dir / "joiner.onnx"),
@@ -1227,6 +1246,13 @@ def _wake_word_candidates(wake_word: str) -> tuple[str, ...]:
         if wake.startswith(prefix) and len(wake) > len(prefix):
             candidates.append(wake[len(prefix) :])
     return tuple(dict.fromkeys(candidates))
+
+
+def _first_existing_path(*paths: Path) -> Path | None:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
 
 
 def _pcm_to_float_samples(pcm_bytes: bytes, *, channels: int) -> list[float]:

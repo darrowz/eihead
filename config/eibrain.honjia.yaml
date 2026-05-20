@@ -92,19 +92,19 @@ body:
             - apps.body_runtime.device_ops
             - probe-sherpa-model
             - --model-dir
-            - /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+            - /mnt/ssd/models/sense-voice
           health_command:
             - python3
             - -m
             - apps.body_runtime.device_ops
             - probe-sherpa-model
             - --model-dir
-            - /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+            - /mnt/ssd/models/sense-voice
           provider: sherpa_onnx
-          model_dir: /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
-          model_type: lstm
+          model_dir: /mnt/ssd/models/sense-voice
+          model_type: sense_voice
           language: zh
-          min_asr_dbfs: -35.0
+          min_asr_dbfs: -39.0
           transcript_replacements:
             鸿好鸿途: 你好鸿途
             您好鸿途: 你好鸿途

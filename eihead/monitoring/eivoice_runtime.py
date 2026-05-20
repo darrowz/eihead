@@ -220,6 +220,8 @@ def _normalize_audio_frontend(runtime: Mapping[str, Any]) -> dict[str, Any]:
         "vad": _normalize_component(frontend.get("vad")),
         "loopback": _normalize_component(frontend.get("loopback")),
         "playbackGate": _normalize_playback_gate(frontend.get("playback_gate") or frontend.get("playbackGate")),
+        "localVad": _normalize_local_vad(frontend.get("local_vad") or frontend.get("localVad")),
+        "localWakeGate": _normalize_local_wake_gate(frontend.get("local_wake_gate") or frontend.get("localWakeGate")),
         "devices": dict(_mapping(frontend.get("devices"))),
         "audioFormat": {
             "sampleRate": _number(audio_format.get("sample_rate") or audio_format.get("sampleRate"), default=0),
@@ -251,6 +253,48 @@ def _normalize_playback_gate(value: Any) -> dict[str, Any]:
         "lastRms": _float(gate.get("last_rms") or gate.get("lastRms"), default=0.0),
         "lastPeak": _float(gate.get("last_peak") or gate.get("lastPeak"), default=0.0),
         "lastBargeIn": _normalize_barge_in(last_barge_in),
+    }
+
+
+def _normalize_local_vad(value: Any) -> dict[str, Any]:
+    vad = _mapping(value)
+    if not vad:
+        return {}
+    return {
+        "enabled": bool(vad.get("enabled")),
+        "active": bool(vad.get("active")),
+        "passedFrames": _number(vad.get("passed_frames") or vad.get("passedFrames"), default=0),
+        "droppedFrames": _number(vad.get("dropped_frames") or vad.get("droppedFrames"), default=0),
+        "voiceFrames": _number(vad.get("voice_frames") or vad.get("voiceFrames"), default=0),
+        "silenceFrames": _number(vad.get("silence_frames") or vad.get("silenceFrames"), default=0),
+        "segmentFrames": _number(vad.get("segment_frames") or vad.get("segmentFrames"), default=0),
+        "hangoverFrames": _number(vad.get("hangover_frames") or vad.get("hangoverFrames"), default=0),
+        "maxFrames": _number(vad.get("max_frames") or vad.get("maxFrames"), default=0),
+        "rmsThreshold": _float(vad.get("rms_threshold") or vad.get("rmsThreshold"), default=0.0),
+        "peakThreshold": _float(vad.get("peak_threshold") or vad.get("peakThreshold"), default=0.0),
+    }
+
+
+def _normalize_local_wake_gate(value: Any) -> dict[str, Any]:
+    gate = _mapping(value)
+    if not gate:
+        return {}
+    return {
+        "enabled": bool(gate.get("enabled")),
+        "state": _text(gate.get("state"), default="unknown"),
+        "conversationActive": bool(gate.get("conversation_active") or gate.get("conversationActive")),
+        "wakeWords": _list(gate.get("wake_words") or gate.get("wakeWords")),
+        "endPhrases": _list(gate.get("end_phrases") or gate.get("endPhrases")),
+        "lastTranscript": _text(gate.get("last_transcript") or gate.get("lastTranscript"), default=""),
+        "lastGateReason": _text(gate.get("last_gate_reason") or gate.get("lastGateReason"), default=""),
+        "lastStatus": _text(gate.get("last_status") or gate.get("lastStatus"), default=""),
+        "lastAsrMs": _float(gate.get("last_asr_ms") or gate.get("lastAsrMs"), default=0.0),
+        "lastError": _text(gate.get("last_error") or gate.get("lastError"), default=""),
+        "droppedSegments": _number(gate.get("dropped_segments") or gate.get("droppedSegments"), default=0),
+        "wakeDetections": _number(gate.get("wake_detections") or gate.get("wakeDetections"), default=0),
+        "endDetections": _number(gate.get("end_detections") or gate.get("endDetections"), default=0),
+        "segmentFrames": _number(gate.get("segment_frames") or gate.get("segmentFrames"), default=0),
+        "transcriber": dict(_mapping(gate.get("transcriber"))),
     }
 
 

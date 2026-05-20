@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 from dataclasses import replace
 import subprocess
+import sys
+from types import SimpleNamespace
 
 from eihead.eivoice_runtime import AudioFrame, EiVoiceRuntimeRunner, FakeWebSocketTransport
 
@@ -221,6 +223,64 @@ def test_native_voice_waits_for_wake_word_when_required() -> None:
     assert status["voice_dialogue"]["conversation_active"] is False
     assert status["voice_dialogue"]["last_status"] == "waiting_for_wake_word"
     assert status["voice_dialogue"]["last_transcript"] == "旁边有声音"
+
+
+def test_sherpa_window_transcriber_uses_sense_voice_layout_when_available(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from eihead.eivoice_runtime.native_loop import SherpaOnnxWindowTranscriber
+
+    model_dir = tmp_path / "sense-voice"
+    model_dir.mkdir()
+    model_path = model_dir / "model.int8.onnx"
+    tokens_path = model_dir / "tokens.txt"
+    model_path.write_bytes(b"fake-model")
+    tokens_path.write_text("fake tokens", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakeStream:
+        def __init__(self) -> None:
+            self.result = SimpleNamespace(text="")
+
+        def accept_waveform(self, *, sample_rate: int, waveform: object) -> None:
+            captured["sample_rate"] = sample_rate
+            captured["waveform"] = waveform
+
+        def input_finished(self) -> None:
+            captured["input_finished"] = True
+
+    class FakeOfflineRecognizer:
+        @classmethod
+        def from_sense_voice(cls, **kwargs: object) -> "FakeOfflineRecognizer":
+            captured["sense_voice_kwargs"] = kwargs
+            return cls()
+
+        def create_stream(self) -> FakeStream:
+            return FakeStream()
+
+        def decode_stream(self, stream: FakeStream) -> None:
+            captured["decoded"] = True
+            stream.result.text = "你好鸿途"
+
+    fake_sherpa = SimpleNamespace(OfflineRecognizer=FakeOfflineRecognizer)
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake_sherpa)
+
+    text = SherpaOnnxWindowTranscriber(
+        model_dir=str(model_dir),
+        model_type="sense_voice",
+        sample_rate=16000,
+    ).transcribe([_pcm_frame(1, payload=b"",)])
+
+    assert text == "你好鸿途"
+    assert captured["decoded"] is True
+    assert captured["sense_voice_kwargs"] == {
+        "model": str(model_path),
+        "tokens": str(tokens_path),
+        "sample_rate": 16000,
+        "language": "zh",
+        "use_itn": True,
+    }
 
 
 def test_native_voice_wake_word_activates_and_strips_prompt() -> None:

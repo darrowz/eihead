@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from array import array
 import json
+import subprocess
 import time
 
 import pytest
@@ -94,6 +95,19 @@ class FakePlaybackSink:
 
     def status(self) -> dict[str, object]:
         return {"running": False, "active": self.active}
+
+
+class FakeSegmentTranscriber:
+    def __init__(self, *texts: str) -> None:
+        self.texts = list(texts)
+        self.calls: list[list[AudioFrame]] = []
+
+    def transcribe(self, frames: list[AudioFrame]) -> str:
+        self.calls.append(list(frames))
+        return self.texts.pop(0) if self.texts else ""
+
+    def status(self) -> dict[str, object]:
+        return {"provider": "fake_asr", "state": "ready", "calls": len(self.calls)}
 
 
 def _pcm_constant(amplitude: int, samples: int = 160) -> bytes:
@@ -579,6 +593,266 @@ def test_openclaw_echo_gate_defaults_to_suppressing_loud_playback_without_barge_
     assert readiness["playbackGate"]["bargeInEnabled"] is False
     assert readiness["playbackGate"]["suppressedFrames"] == 2
     assert readiness["playbackGate"]["bargeInCount"] == 0
+
+
+def test_openclaw_echo_gate_local_vad_drops_idle_noise_before_upstream() -> None:
+    sink = FakePlaybackSink()
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+    )
+
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(quiet) is None
+    readiness = gate.readiness()
+
+    assert readiness["vad"]["enabled"] is True
+    assert readiness["vad"]["available"] is True
+    assert readiness["vad"]["state"] == "local_vad_ready"
+    assert readiness["localVad"]["droppedFrames"] == 1
+    assert readiness["localVad"]["passedFrames"] == 0
+
+
+def test_openclaw_echo_gate_local_vad_passes_speech_and_trailing_silence() -> None:
+    sink = FakePlaybackSink()
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+        local_vad_hangover_frames=2,
+    )
+    speech = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(speech) is speech
+    assert gate.process_capture(quiet) is quiet
+    assert gate.process_capture(quiet) is quiet
+    assert gate.process_capture(quiet) is None
+    readiness = gate.readiness()
+
+    assert readiness["localVad"]["passedFrames"] == 3
+    assert readiness["localVad"]["droppedFrames"] == 1
+    assert readiness["localVad"]["active"] is False
+
+
+def test_openclaw_echo_gate_local_vad_caps_long_voice_segments() -> None:
+    sink = FakePlaybackSink()
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+        local_vad_max_frames=3,
+    )
+    speech = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(speech) is speech
+    assert gate.process_capture(speech) is speech
+    assert gate.process_capture(speech) is speech
+    assert gate.process_capture(speech) is None
+    readiness = gate.readiness()
+
+    assert readiness["localVad"]["passedFrames"] == 3
+    assert readiness["localVad"]["droppedFrames"] == 1
+    assert readiness["localVad"]["maxFrames"] == 3
+
+
+def test_openclaw_echo_gate_local_wake_gate_drops_background_speech_before_upstream() -> None:
+    sink = FakePlaybackSink()
+    events: list[dict[str, object]] = []
+    transcriber = FakeSegmentTranscriber("旁边电视的声音")
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_transcriber=transcriber,
+        wake_word_required=True,
+        wake_words=("你好鸿途", "你好宏图"),
+        end_phrases=("结束对话",),
+        on_gate_event=lambda payload: events.append(dict(payload)),
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+        local_vad_hangover_frames=1,
+    )
+    speech = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+    readiness = gate.readiness()
+
+    assert len(transcriber.calls) == 1
+    assert events == []
+    assert readiness["localWakeGate"]["state"] == "armed"
+    assert readiness["localWakeGate"]["conversationActive"] is False
+    assert readiness["localWakeGate"]["lastTranscript"] == "旁边电视的声音"
+    assert readiness["localWakeGate"]["lastGateReason"] == "wake_word_required"
+    assert readiness["localWakeGate"]["droppedSegments"] == 1
+    assert readiness["localVad"]["passedFrames"] == 0
+
+
+def test_openclaw_echo_gate_local_wake_gate_activates_then_streams_next_utterance() -> None:
+    sink = FakePlaybackSink()
+    events: list[dict[str, object]] = []
+    transcriber = FakeSegmentTranscriber("你好鸿途", "今天天气怎么样")
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_transcriber=transcriber,
+        wake_word_required=True,
+        wake_words=("你好鸿途", "你好宏图"),
+        end_phrases=("结束对话",),
+        on_gate_event=lambda payload: events.append(dict(payload)),
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+        local_vad_hangover_frames=1,
+    )
+    speech = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(speech) is speech
+    readiness = gate.readiness()
+
+    assert events[0]["type"] == "wake_detected"
+    assert events[0]["reply_text"] == "我在。"
+    assert readiness["localWakeGate"]["state"] == "active"
+    assert readiness["localWakeGate"]["conversationActive"] is True
+    assert readiness["localWakeGate"]["lastTranscript"] == "你好鸿途"
+
+
+def test_openclaw_echo_gate_local_wake_gate_end_phrase_returns_to_sleep() -> None:
+    sink = FakePlaybackSink()
+    events: list[dict[str, object]] = []
+    transcriber = FakeSegmentTranscriber("你好鸿途", "结束对话")
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_transcriber=transcriber,
+        wake_word_required=True,
+        wake_words=("你好鸿途",),
+        end_phrases=("结束对话",),
+        on_gate_event=lambda payload: events.append(dict(payload)),
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+        local_vad_hangover_frames=1,
+    )
+    speech = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(speech) is speech
+    assert gate.process_capture(quiet) is quiet
+    assert gate.process_capture(quiet) is None
+    readiness = gate.readiness()
+
+    assert [event["type"] for event in events] == ["wake_detected", "end_phrase_detected"]
+    assert events[-1]["reply_text"] == "好的，结束对话。"
+    assert readiness["localWakeGate"]["state"] == "armed"
+    assert readiness["localWakeGate"]["conversationActive"] is False
+    assert readiness["localWakeGate"]["lastTranscript"] == "结束对话"
+    assert readiness["localWakeGate"]["lastGateReason"] == "end_phrase"
+
+
+def test_openclaw_runtime_enables_local_vad_for_gateway_audio() -> None:
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(openclaw_ws_url="wss://openclaw.example/realtime"),
+        transport_factory=lambda config: OpenClawRealtimeTransport(
+            url=config.openclaw_ws_url,
+            token="token",
+            websocket_factory=lambda url, *, header, timeout: FakeWebSocket(),
+        ),
+        capture_source=EmptyCaptureSource(),
+    )
+
+    readiness = runtime.audio_frontend.readiness()
+
+    assert readiness["vad"]["state"] == "local_vad_ready"
+    assert readiness["localVad"]["enabled"] is True
+
+
+def test_openclaw_runtime_wires_local_wake_gate_when_wake_word_required() -> None:
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(
+            openclaw_ws_url="wss://openclaw.example/realtime",
+            asr_model_dir="/models/asr/sherpa-onnx-streaming",
+            wake_word_required=True,
+            wake_words=("你好鸿途", "你好宏图"),
+            end_phrases=("结束对话",),
+        ),
+        transport_factory=lambda config: OpenClawRealtimeTransport(
+            url=config.openclaw_ws_url,
+            token="token",
+            websocket_factory=lambda url, *, header, timeout: FakeWebSocket(),
+        ),
+        capture_source=EmptyCaptureSource(),
+    )
+
+    readiness = runtime.audio_frontend.readiness()
+
+    assert readiness["localWakeGate"]["enabled"] is True
+    assert readiness["localWakeGate"]["state"] == "armed"
+    assert readiness["localWakeGate"]["wakeWords"] == ["你好鸿途", "你好宏图"]
+    assert readiness["localWakeGate"]["transcriber"]["provider"] == "sherpa_onnx"
+
+
+def test_openclaw_runtime_local_wake_event_plays_configured_piper_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[dict[str, object]] = []
+
+    def fake_run(command: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        command_list = list(command) if isinstance(command, list) else [str(command)]
+        if command_list and command_list[0] in {"/usr/local/bin/piper", "aplay"}:
+            commands.append({"command": command_list, "input": kwargs.get("input")})
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("eihead.runtime.openclaw_runtime.subprocess.run", fake_run)
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(
+            openclaw_ws_url="wss://openclaw.example/realtime",
+            asr_model_dir="/models/asr/sherpa-onnx-streaming",
+            wake_word_required=True,
+            piper_command="/usr/local/bin/piper",
+            piper_model_path="/models/piper/zh_CN-huayan-medium.onnx",
+            piper_config_path="/models/piper/zh_CN-huayan-medium.onnx.json",
+            speaker_device="plughw:CARD=SPA3700,DEV=0",
+            playback_echo_cooldown_ms=1200,
+        ),
+        transport_factory=lambda config: OpenClawRealtimeTransport(
+            url=config.openclaw_ws_url,
+            token="token",
+            websocket_factory=lambda url, *, header, timeout: FakeWebSocket(),
+        ),
+        capture_source=EmptyCaptureSource(),
+    )
+
+    runtime._handle_local_gate_event({"type": "wake_detected", "reply_text": "我在。"})
+
+    assert commands[0]["command"][:5] == [
+        "/usr/local/bin/piper",
+        "--model",
+        "/models/piper/zh_CN-huayan-medium.onnx",
+        "--config",
+        "/models/piper/zh_CN-huayan-medium.onnx.json",
+    ]
+    assert commands[0]["input"] == "我在。"
+    assert commands[1]["command"][:4] == ["aplay", "-q", "-D", "plughw:CARD=SPA3700,DEV=0"]
+    assert runtime._is_remote_output_active() is True
 
 
 def test_openclaw_echo_gate_suppresses_when_remote_session_is_speaking() -> None:

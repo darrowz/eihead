@@ -5,7 +5,9 @@ from __future__ import annotations
 from array import array
 from collections.abc import Callable, Mapping
 import math
+from pathlib import Path
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Any
@@ -15,7 +17,13 @@ from eihead.eivoice_runtime import (
     EiVoiceRuntimeRunner,
     OpenClawRealtimeTransport,
 )
-from eihead.eivoice_runtime.native_loop import ArecordAudioFrameSource, NativeVoiceLoopConfig
+from eihead.eivoice_runtime.native_loop import (
+    ArecordAudioFrameSource,
+    NativeVoiceLoopConfig,
+    SherpaOnnxWindowTranscriber,
+    _contains_spoken_phrase,
+    _strip_wake_word_prefix,
+)
 
 
 TransportFactory = Callable[[NativeVoiceLoopConfig], OpenClawRealtimeTransport]
@@ -140,6 +148,18 @@ class OpenClawPlaybackEchoGate:
         rms_threshold: float = 0.13,
         peak_threshold: float = 0.2,
         consecutive_frames: int = 2,
+        local_vad_enabled: bool = False,
+        local_vad_rms_threshold: float = 0.14,
+        local_vad_peak_threshold: float = 0.28,
+        local_vad_hangover_frames: int = 5,
+        local_vad_max_frames: int = 35,
+        local_transcriber: Any | None = None,
+        wake_word_required: bool = False,
+        wake_words: tuple[str, ...] = ("你好鸿途",),
+        end_phrases: tuple[str, ...] = ("结束对话",),
+        wake_ack_text: str = "我在。",
+        end_ack_text: str = "好的，结束对话。",
+        on_gate_event: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         self.playback_sink = playback_sink
         self.on_barge_in = on_barge_in
@@ -148,9 +168,37 @@ class OpenClawPlaybackEchoGate:
         self.rms_threshold = float(rms_threshold)
         self.peak_threshold = float(peak_threshold)
         self.consecutive_frames = max(1, int(consecutive_frames))
+        self.local_vad_enabled = bool(local_vad_enabled)
+        self.local_vad_rms_threshold = max(0.0, float(local_vad_rms_threshold))
+        self.local_vad_peak_threshold = max(0.0, float(local_vad_peak_threshold))
+        self.local_vad_hangover_frames = max(0, int(local_vad_hangover_frames))
+        self.local_vad_max_frames = max(1, int(local_vad_max_frames))
+        self.local_transcriber = local_transcriber
+        self.wake_word_required = bool(wake_word_required)
+        self.wake_words = tuple(str(item) for item in wake_words if str(item))
+        self.end_phrases = tuple(str(item) for item in end_phrases if str(item))
+        self.wake_ack_text = str(wake_ack_text or "")
+        self.end_ack_text = str(end_ack_text or "")
+        self.on_gate_event = on_gate_event
         self._speech_frames = 0
         self._suppressed_frames = 0
         self._barge_in_count = 0
+        self._conversation_active = not self.wake_word_required
+        self._local_vad_active = False
+        self._local_vad_voice_frames = 0
+        self._local_vad_silence_frames = 0
+        self._local_vad_passed_frames = 0
+        self._local_vad_dropped_frames = 0
+        self._local_vad_segment_frames = 0
+        self._local_gate_segment_frames: list[AudioFrame] = []
+        self._local_gate_last_transcript = ""
+        self._local_gate_last_reason = ""
+        self._local_gate_last_status = "disabled" if not self.wake_word_required else "armed"
+        self._local_gate_last_error = ""
+        self._local_gate_last_asr_ms: float | None = None
+        self._local_gate_dropped_segments = 0
+        self._local_gate_wake_detections = 0
+        self._local_gate_end_detections = 0
         self._last_rms = 0.0
         self._last_peak = 0.0
         self._last_muted = False
@@ -173,11 +221,17 @@ class OpenClawPlaybackEchoGate:
         self._last_peak = round(peak, 5)
         if not playback_active:
             self._speech_frames = 0
+            if self.wake_word_required:
+                return self._process_local_wake_gate(frame, rms=rms, peak=peak)
+            if self.local_vad_enabled:
+                return self._process_local_vad(frame, rms=rms, peak=peak)
             self._last_muted = False
             return frame
 
         if not self.barge_in_enabled:
             self._speech_frames = 0
+            self._reset_local_vad()
+            self._local_gate_segment_frames.clear()
             self._suppressed_frames += 1
             self._last_muted = True
             return None
@@ -207,19 +261,212 @@ class OpenClawPlaybackEchoGate:
         self._last_muted = True
         return None
 
+    def _process_local_wake_gate(self, frame: AudioFrame, *, rms: float, peak: float) -> AudioFrame | None:
+        if self.local_transcriber is None:
+            self._local_gate_last_status = "gate_unavailable"
+            self._local_gate_last_reason = "missing_local_transcriber"
+            self._local_vad_dropped_frames += 1
+            self._last_muted = True
+            return None
+        if self._local_vad_active and self._local_vad_segment_frames >= self.local_vad_max_frames:
+            return self._finalize_local_gate_segment(reason="max_segment_frames")
+
+        speech_like = rms >= self.local_vad_rms_threshold and peak >= self.local_vad_peak_threshold
+        if speech_like:
+            self._local_vad_active = True
+            self._local_vad_voice_frames += 1
+            self._local_vad_silence_frames = 0
+            self._local_vad_segment_frames += 1
+            self._local_gate_segment_frames.append(frame)
+            if self._conversation_active:
+                self._local_vad_passed_frames += 1
+                self._last_muted = False
+                return frame
+            self._local_vad_dropped_frames += 1
+            self._last_muted = True
+            return None
+
+        if self._local_vad_active and self._local_vad_silence_frames < self.local_vad_hangover_frames:
+            self._local_vad_silence_frames += 1
+            self._local_vad_segment_frames += 1
+            self._local_gate_segment_frames.append(frame)
+            if self._conversation_active:
+                self._local_vad_passed_frames += 1
+                self._last_muted = False
+                return frame
+            self._local_vad_dropped_frames += 1
+            self._last_muted = True
+            return None
+
+        if self._local_vad_active:
+            return self._finalize_local_gate_segment(reason="end_silence")
+
+        self._local_vad_dropped_frames += 1
+        self._last_muted = True
+        return None
+
+    def _finalize_local_gate_segment(self, *, reason: str) -> None:
+        frames = list(self._local_gate_segment_frames)
+        self._local_gate_segment_frames.clear()
+        self._reset_local_vad()
+        self._last_muted = True
+        if not frames:
+            return None
+
+        started = time.perf_counter()
+        try:
+            text = str(self.local_transcriber.transcribe(frames) if self.local_transcriber is not None else "").strip()
+            self._local_gate_last_error = ""
+        except Exception as exc:  # pragma: no cover - host ASR dependency safeguard
+            text = ""
+            self._local_gate_last_error = str(exc)
+            self._local_gate_last_reason = "local_asr_error"
+            self._local_gate_last_status = "local_asr_error"
+            self._local_gate_dropped_segments += 1
+        self._local_gate_last_asr_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        if not text:
+            self._local_gate_last_transcript = ""
+            if not self._local_gate_last_error:
+                self._local_gate_last_reason = "empty_transcript"
+                self._local_gate_last_status = "empty_transcript"
+                self._local_gate_dropped_segments += 1
+            return None
+
+        self._local_gate_last_transcript = text
+        if self._conversation_active:
+            if _contains_spoken_phrase(text, self.end_phrases):
+                self._conversation_active = False
+                self._local_gate_end_detections += 1
+                self._local_gate_last_reason = "end_phrase"
+                self._local_gate_last_status = "conversation_ended"
+                self._emit_gate_event(
+                    {
+                        "type": "end_phrase_detected",
+                        "text": text,
+                        "reply_text": self.end_ack_text,
+                        "asr_ms": self._local_gate_last_asr_ms,
+                        "reason": "end_phrase",
+                    }
+                )
+            else:
+                self._local_gate_last_reason = reason
+                self._local_gate_last_status = "conversation_active"
+            return None
+
+        remainder = _strip_wake_word_prefix(text, self.wake_words)
+        if remainder is None:
+            self._local_gate_dropped_segments += 1
+            self._local_gate_last_reason = "wake_word_required"
+            self._local_gate_last_status = "waiting_for_wake_word"
+            return None
+
+        self._conversation_active = True
+        self._local_gate_wake_detections += 1
+        self._local_gate_last_reason = "wake_word_detected"
+        self._local_gate_last_status = "wake_word_detected"
+        self._emit_gate_event(
+            {
+                "type": "wake_detected",
+                "text": text,
+                "remainder": remainder,
+                "reply_text": self.wake_ack_text,
+                "asr_ms": self._local_gate_last_asr_ms,
+                "reason": "wake_word_detected",
+            }
+        )
+        return None
+
+    def _emit_gate_event(self, payload: Mapping[str, Any]) -> None:
+        if self.on_gate_event is not None:
+            self.on_gate_event(payload)
+
+    def _process_local_vad(self, frame: AudioFrame, *, rms: float, peak: float) -> AudioFrame | None:
+        if self._local_vad_active and self._local_vad_segment_frames >= self.local_vad_max_frames:
+            self._reset_local_vad()
+            self._local_vad_dropped_frames += 1
+            self._last_muted = True
+            return None
+        speech_like = rms >= self.local_vad_rms_threshold and peak >= self.local_vad_peak_threshold
+        if speech_like:
+            self._local_vad_active = True
+            self._local_vad_voice_frames += 1
+            self._local_vad_silence_frames = 0
+            self._local_vad_segment_frames += 1
+            self._local_vad_passed_frames += 1
+            self._last_muted = False
+            return frame
+        if self._local_vad_active and self._local_vad_silence_frames < self.local_vad_hangover_frames:
+            self._local_vad_silence_frames += 1
+            self._local_vad_segment_frames += 1
+            self._local_vad_passed_frames += 1
+            self._last_muted = False
+            return frame
+        self._reset_local_vad()
+        self._local_vad_dropped_frames += 1
+        self._last_muted = True
+        return None
+
+    def _reset_local_vad(self) -> None:
+        self._local_vad_active = False
+        self._local_vad_voice_frames = 0
+        self._local_vad_silence_frames = 0
+        self._local_vad_segment_frames = 0
+
     def readiness(self) -> dict[str, Any]:
+        vad_state = "disabled"
+        if self.local_vad_enabled:
+            vad_state = "local_vad_ready"
+        elif self.barge_in_enabled:
+            vad_state = "barge_in_ready"
+        elif self._last_output_active or self._suppressed_frames:
+            vad_state = "echo_suppression_only"
+        local_gate_state = "disabled"
+        if self.wake_word_required:
+            local_gate_state = "active" if self._conversation_active else "armed"
+            if self.local_transcriber is None:
+                local_gate_state = "unavailable"
         return {
             "mode": "openclaw_playback_echo_gate",
             "healthy": True,
             "aec": {"enabled": True, "available": True, "state": "playback_gate"},
             "ns": {"enabled": False, "available": False, "state": "disabled"},
             "vad": {
-                "enabled": self.barge_in_enabled,
-                "available": self.barge_in_enabled,
-                "state": "barge_in_ready" if self.barge_in_enabled else "echo_suppression_only",
+                "enabled": self.local_vad_enabled or self.barge_in_enabled,
+                "available": self.local_vad_enabled or self.barge_in_enabled,
+                "state": vad_state,
             },
             "loopback": {"enabled": False, "available": False, "state": "disabled"},
             "warnings": [],
+            "localVad": {
+                "enabled": self.local_vad_enabled,
+                "active": self._local_vad_active,
+                "passedFrames": self._local_vad_passed_frames,
+                "droppedFrames": self._local_vad_dropped_frames,
+                "voiceFrames": self._local_vad_voice_frames,
+                "silenceFrames": self._local_vad_silence_frames,
+                "segmentFrames": self._local_vad_segment_frames,
+                "hangoverFrames": self.local_vad_hangover_frames,
+                "maxFrames": self.local_vad_max_frames,
+                "rmsThreshold": self.local_vad_rms_threshold,
+                "peakThreshold": self.local_vad_peak_threshold,
+            },
+            "localWakeGate": {
+                "enabled": self.wake_word_required,
+                "state": local_gate_state,
+                "conversationActive": self._conversation_active,
+                "wakeWords": list(self.wake_words),
+                "endPhrases": list(self.end_phrases),
+                "lastTranscript": self._local_gate_last_transcript,
+                "lastGateReason": self._local_gate_last_reason,
+                "lastStatus": self._local_gate_last_status,
+                "lastAsrMs": self._local_gate_last_asr_ms,
+                "lastError": self._local_gate_last_error,
+                "droppedSegments": self._local_gate_dropped_segments,
+                "wakeDetections": self._local_gate_wake_detections,
+                "endDetections": self._local_gate_end_detections,
+                "segmentFrames": len(self._local_gate_segment_frames),
+                "transcriber": self._local_transcriber_status(),
+            },
             "playbackGate": {
                 "bargeInEnabled": self.barge_in_enabled,
                 "outputActive": self._last_output_active,
@@ -235,6 +482,15 @@ class OpenClawPlaybackEchoGate:
                 "lastBargeIn": dict(self._last_barge_in) if self._last_barge_in else None,
             },
         }
+
+    def _local_transcriber_status(self) -> dict[str, Any]:
+        if self.local_transcriber is None:
+            return {"provider": None, "state": "missing"}
+        status = getattr(self.local_transcriber, "status", None)
+        if not callable(status):
+            return {"provider": type(self.local_transcriber).__name__, "state": "attached"}
+        payload = status()
+        return dict(payload) if isinstance(payload, Mapping) else {"state": "unknown"}
 
 
 class OpenClawRealtimeRuntime:
@@ -265,6 +521,18 @@ class OpenClawRealtimeRuntime:
             rms_threshold=max(0.08, float(config.vad_rms_threshold)),
             peak_threshold=max(0.18, float(config.vad_rms_threshold) * 1.5),
             consecutive_frames=_barge_in_consecutive_frames(config),
+            local_vad_enabled=True,
+            local_vad_rms_threshold=max(0.14, float(config.vad_rms_threshold)),
+            local_vad_peak_threshold=max(0.28, float(config.vad_rms_threshold) * 1.8),
+            local_vad_hangover_frames=_local_vad_hangover_frames(config),
+            local_vad_max_frames=_local_vad_max_frames(config),
+            local_transcriber=_build_local_wake_transcriber(config),
+            wake_word_required=config.wake_word_required,
+            wake_words=config.wake_words,
+            end_phrases=config.end_phrases,
+            wake_ack_text=config.wake_ack_text,
+            end_ack_text=config.end_ack_text,
+            on_gate_event=self._handle_local_gate_event,
         )
         self.runner = (
             EiVoiceRuntimeRunner(
@@ -284,6 +552,8 @@ class OpenClawRealtimeRuntime:
         self._started = False
         self._last_error = ""
         self._last_barge_in: dict[str, Any] | None = None
+        self._last_local_gate_event: dict[str, Any] | None = None
+        self._local_output_active_until = 0.0
 
     def start(self) -> None:
         if not self.config.enabled:
@@ -477,7 +747,84 @@ class OpenClawRealtimeRuntime:
                 "ts": time.time(),
             }
 
+    def _handle_local_gate_event(self, payload: Mapping[str, Any]) -> None:
+        event = dict(payload)
+        event["ts"] = time.time()
+        reply_text = str(event.get("reply_text") or "")
+        if reply_text:
+            event["playback"] = self._play_local_gate_reply(reply_text)
+        with self._lock:
+            self._last_local_gate_event = event
+        event_type = str(event.get("type") or "")
+        if event_type == "end_phrase_detected":
+            if self.transport is not None:
+                self.transport.cancel_output("local_end_phrase")
+            if self.runner is not None:
+                self.runner.interrupt_playback(reason="local_end_phrase", source="local_wake_gate")
+
+    def _play_local_gate_reply(self, text: str) -> dict[str, Any]:
+        text_value = str(text or "").strip()
+        if not text_value:
+            return {"status": "skipped", "success": False, "details": {"reason": "empty_text"}}
+        model_path = self.config.piper_model_path.strip()
+        if not model_path:
+            return {"status": "skipped", "success": False, "details": {"reason": "missing_piper_model_path"}}
+        started = time.perf_counter()
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            wav_path = Path(handle.name)
+        command = [self.config.piper_command, "--model", model_path]
+        config_path = self.config.piper_config_path.strip()
+        if config_path:
+            command.extend(["--config", config_path])
+        command.extend(["--output_file", str(wav_path)])
+        try:
+            synth = subprocess.run(
+                command,
+                input=text_value,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if synth.returncode != 0:
+                return {
+                    "status": "error",
+                    "success": False,
+                    "details": {
+                        "backend": "piper",
+                        "reason": "synthesis_failed",
+                        "returncode": synth.returncode,
+                        "stderr": (synth.stderr or "").strip(),
+                    },
+                }
+            playback = subprocess.run(
+                ["aplay", "-q", "-D", self.config.speaker_device, str(wav_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+            cooldown_s = max(0.0, float(self.config.playback_echo_cooldown_ms) / 1000.0)
+            self._local_output_active_until = max(self._local_output_active_until, time.monotonic() + cooldown_s)
+            return {
+                "status": "ok" if playback.returncode == 0 else "error",
+                "success": playback.returncode == 0,
+                "details": {
+                    "backend": "piper",
+                    "command": self.config.piper_command,
+                    "model_path": model_path,
+                    "config_path": config_path,
+                    "device": self.config.speaker_device,
+                    "playback_elapsed_ms": elapsed_ms,
+                    "returncode": playback.returncode,
+                    "stderr": (playback.stderr or "").strip(),
+                },
+            }
+        finally:
+            wav_path.unlink(missing_ok=True)
+
     def _is_remote_output_active(self) -> bool:
+        if time.monotonic() <= self._local_output_active_until:
+            return True
         if self.transport is None:
             return False
         payload = _mapping(self.transport.status().get("openclaw_ws"))
@@ -652,6 +999,16 @@ def _default_transport_factory(config: NativeVoiceLoopConfig) -> OpenClawRealtim
     )
 
 
+def _build_local_wake_transcriber(config: NativeVoiceLoopConfig) -> SherpaOnnxWindowTranscriber | None:
+    if not config.wake_word_required or not config.asr_model_dir:
+        return None
+    return SherpaOnnxWindowTranscriber(
+        model_dir=config.asr_model_dir,
+        model_type=config.asr_model_type,
+        sample_rate=config.sample_rate,
+    )
+
+
 def _session_config(config: NativeVoiceLoopConfig) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "sessionKey": config.dialogue_session_id,
@@ -730,6 +1087,18 @@ def _barge_in_consecutive_frames(config: NativeVoiceLoopConfig) -> int:
     frame_ms = max(1, int(config.frame_ms))
     min_voice_ms = max(frame_ms * 2, int(config.vad_min_voice_ms))
     return max(2, min(5, math.ceil(min_voice_ms / frame_ms)))
+
+
+def _local_vad_hangover_frames(config: NativeVoiceLoopConfig) -> int:
+    frame_ms = max(1, int(config.frame_ms))
+    end_silence_ms = max(frame_ms, int(config.vad_end_silence_ms))
+    return max(1, min(10, math.ceil(end_silence_ms / frame_ms)))
+
+
+def _local_vad_max_frames(config: NativeVoiceLoopConfig) -> int:
+    frame_ms = max(1, int(config.frame_ms))
+    max_utterance_ms = max(frame_ms, int(config.max_utterance_ms))
+    return max(5, min(80, math.ceil(max_utterance_ms / frame_ms)))
 
 
 def _pcm_rms_peak(pcm: bytes, *, channels: int) -> tuple[float, float]:

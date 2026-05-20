@@ -138,6 +138,32 @@ def test_audio_frontend_panel_preserves_loopback_route_and_last_capture() -> Non
                         "cancelled_remote_output": True,
                     },
                 },
+                "local_vad": {
+                    "enabled": True,
+                    "active": False,
+                    "passed_frames": 12,
+                    "dropped_frames": 34,
+                    "voice_frames": 0,
+                    "silence_frames": 0,
+                    "segment_frames": 0,
+                    "hangover_frames": 5,
+                    "max_frames": 35,
+                    "rms_threshold": 0.14,
+                    "peak_threshold": 0.28,
+                },
+                "localWakeGate": {
+                    "enabled": True,
+                    "state": "armed",
+                    "conversationActive": False,
+                    "lastTranscript": "旁边电视的声音",
+                    "lastGateReason": "wake_word_required",
+                    "lastStatus": "waiting_for_wake_word",
+                    "lastAsrMs": 1860.2,
+                    "droppedSegments": 3,
+                    "wakeDetections": 1,
+                    "endDetections": 0,
+                    "transcriber": {"provider": "sherpa_onnx", "state": "ready"},
+                },
                 "last_capture": {
                     "playback_reference_available": True,
                     "reference_age_ms": 42.0,
@@ -167,6 +193,18 @@ def test_audio_frontend_panel_preserves_loopback_route_and_last_capture() -> Non
     assert panel["audioFrontend"]["playbackGate"]["bargeInCount"] == 1
     assert panel["audioFrontend"]["playbackGate"]["lastRms"] == 0.12
     assert panel["audioFrontend"]["playbackGate"]["lastBargeIn"]["cancelledRemoteOutput"] is True
+    assert panel["audioFrontend"]["localVad"]["enabled"] is True
+    assert panel["audioFrontend"]["localVad"]["passedFrames"] == 12
+    assert panel["audioFrontend"]["localVad"]["droppedFrames"] == 34
+    assert panel["audioFrontend"]["localVad"]["maxFrames"] == 35
+    assert panel["audioFrontend"]["localVad"]["rmsThreshold"] == 0.14
+    assert panel["audioFrontend"]["localWakeGate"]["state"] == "armed"
+    assert panel["audioFrontend"]["localWakeGate"]["conversationActive"] is False
+    assert panel["audioFrontend"]["localWakeGate"]["lastTranscript"] == "旁边电视的声音"
+    assert panel["audioFrontend"]["localWakeGate"]["lastGateReason"] == "wake_word_required"
+    assert panel["audioFrontend"]["localWakeGate"]["lastAsrMs"] == 1860.2
+    assert panel["audioFrontend"]["localWakeGate"]["droppedSegments"] == 3
+    assert panel["audioFrontend"]["localWakeGate"]["transcriber"]["provider"] == "sherpa_onnx"
     assert panel["audioFrontend"]["lastCapture"]["playbackReferenceAvailable"] is True
     assert panel["audioFrontend"]["lastCapture"]["referenceAgeMs"] == 42.0
     assert panel["audioFrontend"]["lastCapture"]["referenceMatchedBy"] == "pipewire-target"
@@ -565,7 +603,19 @@ class AttachedVoiceRuntimeApp(RuntimePanelApp):
             "conversation_state": "listening",
             "health": "healthy",
             "running": True,
-            "audio_frontend": {"vad": {"enabled": True, "state": "listening"}},
+            "audio_frontend": {
+                "vad": {"enabled": True, "state": "listening"},
+                "localWakeGate": {
+                    "enabled": True,
+                    "state": "armed",
+                    "conversationActive": False,
+                    "lastTranscript": "旁边电视的声音",
+                    "lastGateReason": "wake_word_required",
+                    "lastAsrMs": 1860.2,
+                    "droppedSegments": 3,
+                    "transcriber": {"provider": "sherpa_onnx", "state": "ready"},
+                },
+            },
         }
 
 
@@ -645,6 +695,8 @@ def test_web_voice_realtime_reports_attached_native_runtime_as_live() -> None:
     assert "耗时拆分" in body
     assert "语音链路明细" in body
     assert "链路状态" in body
+    assert "Local wake gate" in body
+    assert "旁边电视的声音" in body
     assert "ASR 识别 1033.08ms" in body
     assert "脑端回复 710.51ms" in body
     assert "TTS 播放 4889.2ms" in body

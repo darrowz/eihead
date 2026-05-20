@@ -746,6 +746,8 @@ def _render_index(app: Any, timestamp: float) -> str:
         _metric_value(_first_mapping_value(eivoice_transport, "reconnect").get("attempt"))
     )
     eivoice_openclaw_ws = _display_value(_openclaw_ws_summary(eivoice_panel.get("openclawWs")))
+    eivoice_local_vad = _display_value(_eivoice_local_vad_summary(eivoice_panel))
+    eivoice_local_wake_gate = _display_value(_eivoice_local_wake_gate_summary(eivoice_panel))
     neck_current_angle = _display_value(_metric_value(neck.get("current_angle"), suffix="deg"))
     neck_target_angle = _display_value(_metric_value(neck.get("target_angle"), suffix="deg"))
     neck_will_move = _display_value(neck.get("will_move") if neck.get("will_move") is not None else "unknown")
@@ -907,6 +909,8 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">OpenClaw WS</div><span class="metric">{eivoice_openclaw_ws}</span></div>
       <div class="card"><div class="label">Transport heartbeat</div><span class="metric">{eivoice_transport_heartbeat}</span></div>
       <div class="card"><div class="label">Reconnect attempts</div><span class="metric">{eivoice_transport_reconnect}</span></div>
+      <div class="card"><div class="label">Local VAD</div><span class="metric">{eivoice_local_vad}</span></div>
+      <div class="card"><div class="label">Local wake gate</div><span class="metric">{eivoice_local_wake_gate}</span></div>
       <div class="card"><div class="label">Warnings</div><span class="metric">{eivoice_warning_text}</span></div>
     </section>
     <h2>Status</h2>
@@ -1832,6 +1836,58 @@ def _voice_mic_vad_summary(value: Any) -> str:
     if vad not in (None, ""):
         parts.append(f"vad={vad}")
     return " / ".join(parts) if parts else "unknown"
+
+
+def _eivoice_local_vad_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    frontend = value.get("audioFrontend") or value.get("audio_frontend")
+    if not isinstance(frontend, Mapping):
+        return "unknown"
+    local_vad = frontend.get("localVad") or frontend.get("local_vad")
+    if not isinstance(local_vad, Mapping) or not local_vad:
+        return "未上报"
+    state = "语音段" if local_vad.get("active") is True else "静音/待机"
+    enabled = "开启" if local_vad.get("enabled") is True else "关闭"
+    passed = _metric_value(local_vad.get("passedFrames") or local_vad.get("passed_frames"))
+    dropped = _metric_value(local_vad.get("droppedFrames") or local_vad.get("dropped_frames"))
+    segment = _metric_value(local_vad.get("segmentFrames") or local_vad.get("segment_frames"))
+    max_frames = _metric_value(local_vad.get("maxFrames") or local_vad.get("max_frames"))
+    rms = _metric_value(local_vad.get("rmsThreshold") or local_vad.get("rms_threshold"))
+    peak = _metric_value(local_vad.get("peakThreshold") or local_vad.get("peak_threshold"))
+    return (
+        f"{enabled} / {state} / 放行={passed} / 丢弃={dropped} / "
+        f"段={segment}/{max_frames} / rms阈值={rms} / peak阈值={peak}"
+    )
+
+
+def _eivoice_local_wake_gate_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    frontend = value.get("audioFrontend") or value.get("audio_frontend")
+    if not isinstance(frontend, Mapping):
+        return "unknown"
+    gate = frontend.get("localWakeGate") or frontend.get("local_wake_gate")
+    if not isinstance(gate, Mapping) or not gate:
+        return "未上报"
+    enabled = "开启" if gate.get("enabled") is True else "关闭"
+    active = "唤醒中" if gate.get("conversationActive") is True or gate.get("conversation_active") is True else "休眠"
+    state = gate.get("state") or "unknown"
+    reason = gate.get("lastGateReason") or gate.get("last_gate_reason") or "none"
+    transcript = gate.get("lastTranscript") or gate.get("last_transcript") or ""
+    asr_ms = gate.get("lastAsrMs") or gate.get("last_asr_ms")
+    dropped = gate.get("droppedSegments") or gate.get("dropped_segments") or 0
+    wake_hits = gate.get("wakeDetections") or gate.get("wake_detections") or 0
+    end_hits = gate.get("endDetections") or gate.get("end_detections") or 0
+    transcriber = gate.get("transcriber") if isinstance(gate.get("transcriber"), Mapping) else {}
+    provider = transcriber.get("provider") or "unknown"
+    provider_state = transcriber.get("state") or "unknown"
+    transcript_part = f" / ASR={transcript}" if transcript else ""
+    return (
+        f"{enabled} / {active} / 状态={state} / 原因={reason}{transcript_part} / "
+        f"识别={_metric_value(asr_ms, suffix='ms')} / 丢弃段={_metric_value(dropped)} / "
+        f"唤醒={_metric_value(wake_hits)} / 结束={_metric_value(end_hits)} / {provider}:{provider_state}"
+    )
 
 
 def _voice_asr_detail_summary(value: Any) -> str:
