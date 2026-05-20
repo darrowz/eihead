@@ -99,7 +99,7 @@ class AplayPcmPlaybackSink:
         duration_s = max(0.0, float(frame.duration_ms) / 1000.0)
         self._last_play_at = now
         self._last_frame_duration_ms = int(frame.duration_ms)
-        self._active_until = max(self._active_until, now) + duration_s + max(0.0, self.active_grace_s)
+        self._active_until = max(self._active_until, now + duration_s + max(0.0, self.active_grace_s))
 
     def _ensure_process(self, *, sample_rate: int, channels: int) -> None:
         audio_format = (int(sample_rate), int(channels))
@@ -240,7 +240,7 @@ class OpenClawPlaybackEchoGate:
 class OpenClawRealtimeRuntime:
     """Runtime adapter that bridges honjia microphone/playback to VoiceClaw."""
 
-    OUTPUT_AUDIO_GRACE_S = 1.2
+    OUTPUT_AUDIO_GRACE_S = 4.0
 
     def __init__(
         self,
@@ -702,7 +702,7 @@ def _recent_audio_active(payload: Mapping[str, Any], *, grace_s: float) -> bool:
 
 def _playback_grace_s(config: NativeVoiceLoopConfig) -> float:
     configured = max(0.0, float(config.playback_echo_cooldown_ms) / 1000.0)
-    return max(2.5, configured)
+    return max(4.0, configured)
 
 
 def _openclaw_stage_latency(openclaw_ws: Mapping[str, Any]) -> dict[str, Any]:

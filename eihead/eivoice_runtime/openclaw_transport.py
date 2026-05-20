@@ -28,6 +28,8 @@ DEFAULT_CLIENT_MODE = "cli"
 DEFAULT_CLIENT_VERSION = "eihead"
 DEFAULT_SCOPES = ["operator.read", "operator.write"]
 DEFAULT_CAPS = ["tool-events"]
+DEFAULT_SEND_TIMEOUT_S = 2.0
+MAX_RECEIVE_DRAIN_MESSAGES = 100
 
 
 class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
@@ -52,6 +54,7 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         device_identity_path: str | None = None,
         device_signer: DeviceSigner | None = None,
         connect_timeout: float = 10.0,
+        send_timeout: float = DEFAULT_SEND_TIMEOUT_S,
         receive_timeout: float = 0.02,
         session_ready_timeout: float = 15.0,
         heartbeat_interval: float = 10.0,
@@ -86,6 +89,7 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         self.device_identity = _resolve_device_identity(device_identity, device_identity_path)
         self.device_signer = device_signer or _default_device_signer
         self.connect_timeout = float(connect_timeout)
+        self.send_timeout = max(0.1, float(send_timeout))
         self.receive_timeout = float(receive_timeout)
         self.session_ready_timeout = float(session_ready_timeout)
         self.websocket_factory = websocket_factory or _default_websocket_factory
@@ -196,27 +200,32 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         timeout_s = self.receive_timeout if timeout is None else float(timeout)
         if not block and timeout is None:
             timeout_s = self.receive_timeout
-        try:
-            _set_ws_timeout(ws, timeout_s)
-            message = _recv_ws_json(ws)
-        except Exception as exc:
-            if _is_timeout(exc):
+        for _ in range(MAX_RECEIVE_DRAIN_MESSAGES):
+            try:
+                _set_ws_timeout(ws, timeout_s)
+                message = _recv_ws_json(ws)
+            except Exception as exc:
+                if _is_timeout(exc):
+                    return None
+                self.record_error(exc, context="receive_event")
+                self._session_state = "error"
+                self._close_socket()
+                self.schedule_reconnect("receive_error")
                 return None
-            self.record_error(exc, context="receive_event")
-            self._session_state = "error"
-            self._close_socket()
-            self.schedule_reconnect("receive_error")
-            return None
-        event = self.decode_message(message)
-        self._record_message(message, event)
-        if event is None:
-            return None
-        with self._lock:
-            self._last_rx_ms = int(round(self._clock() * 1000))
-            self._last_activity_at = self._clock()
-        if _event_type(event) == "PONG":
-            self.record_pong(event)
-        return event
+            if _is_gateway_response(message):
+                self._record_message(message, None)
+                continue
+            event = self.decode_message(message)
+            self._record_message(message, event)
+            if event is None:
+                continue
+            with self._lock:
+                self._last_rx_ms = int(round(self._clock() * 1000))
+                self._last_activity_at = self._clock()
+            if _event_type(event) == "PONG":
+                self.record_pong(event)
+            return event
+        return None
 
     def drain_inbound_events(self) -> list[dict[str, Any]]:
         drained: list[dict[str, Any]] = []
@@ -254,6 +263,7 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         status["endpoint"] = {
             "url": self.url,
             "connect_timeout_s": self.connect_timeout,
+            "send_timeout_s": self.send_timeout,
             "receive_timeout_s": self.receive_timeout,
             "session_ready_timeout_s": self.session_ready_timeout,
             "headers": sorted(self.headers.keys()),
@@ -364,6 +374,7 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
     def _request_response(self, ws: Any, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
         _set_ws_timeout(ws, self.session_ready_timeout)
         request_id = self._send_request(ws, method, dict(params))
+        _set_ws_timeout(ws, self.session_ready_timeout)
         while True:
             message = _recv_ws_json(ws)
             self._record_message(message, None)
@@ -378,6 +389,7 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
     def _send_request(self, ws: Any, method: str, params: Mapping[str, Any]) -> str:
         self._request_id += 1
         request_id = str(self._request_id)
+        _set_ws_timeout(ws, self.send_timeout)
         ws.send(json.dumps({"type": "req", "id": request_id, "method": method, "params": dict(params)}))
         with self._lock:
             self._last_tx_ms = int(round(self._clock() * 1000))
@@ -684,6 +696,10 @@ def _is_relay_event(message: Mapping[str, Any], relay_session_id: str, event_typ
         str(payload.get("relaySessionId") or "") == relay_session_id
         and str(payload.get("type") or "") == event_type
     )
+
+
+def _is_gateway_response(message: Mapping[str, Any]) -> bool:
+    return str(message.get("type") or "") == "res"
 
 
 def _is_timeout(exc: BaseException) -> bool:

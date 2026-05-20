@@ -52,6 +52,13 @@ class FakeWebSocket:
         self.closed = True
 
 
+class SendTimeoutGuardWebSocket(FakeWebSocket):
+    def send(self, payload: object) -> None:
+        if self.timeout is not None and self.timeout < 1.0:
+            raise TimeoutError(f"send used receive timeout: {self.timeout}")
+        super().send(payload)
+
+
 class EmptyCaptureSource:
     def read_frame(self) -> None:
         return None
@@ -217,7 +224,8 @@ def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope
         },
     ]
     assert transport.status()["connection"]["state"] == "connected"
-    assert socket.timeout_history == [0.02, 15.0, 15.0, 15.0, 15.0, 0.02]
+    assert 2.0 in socket.timeout_history
+    assert socket.timeout_history[-1] == 2.0
     transport.close()
     assert json.loads(str(socket.sent[-1])) == {
         "type": "req",
@@ -345,6 +353,83 @@ def test_openclaw_transport_receives_audio_delta_and_updates_status() -> None:
     assert status["openclaw_ws"]["last_rx_ms"] == 20750
 
 
+def test_openclaw_transport_drains_append_audio_acks_before_audio_event() -> None:
+    socket = FakeWebSocket(
+        incoming=[
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {"type": "res", "id": "1", "ok": True, "payload": {"auth": {"role": "operator"}}},
+            {
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {"relaySessionId": "relay-1", "audio": {"inputSampleRateHz": 24000}},
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
+            {"type": "res", "id": "3", "ok": True, "payload": {"ok": True}},
+            {"type": "res", "id": "4", "ok": True, "payload": {"ok": True}},
+            {
+                "type": "event",
+                "event": "talk.event",
+                "payload": {
+                    "relaySessionId": "relay-1",
+                    "type": "audio",
+                    "audioBase64": "BAUG",
+                },
+            },
+        ]
+    )
+    transport = OpenClawRealtimeTransport(
+        url="wss://openclaw.example/realtime",
+        token="token",
+        websocket_factory=lambda url, *, header, timeout: socket,
+    )
+
+    transport.connect()
+
+    event = transport.receive_event()
+
+    assert event is not None
+    assert event["contentType"] == "AUDIO_CHUNK"
+    assert event["content"]["audioBase64"] == "BAUG"
+    assert transport.status()["openclaw_ws"]["last_audio_rx_ms"] is not None
+
+
+def test_openclaw_transport_uses_send_timeout_after_short_receive_poll() -> None:
+    socket = SendTimeoutGuardWebSocket(
+        incoming=[
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {"type": "res", "id": "1", "ok": True, "payload": {"auth": {"role": "operator"}}},
+            {
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {"relaySessionId": "relay-1", "audio": {"inputSampleRateHz": 24000}},
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
+        ]
+    )
+    transport = OpenClawRealtimeTransport(
+        url="wss://openclaw.example/realtime",
+        token="token",
+        websocket_factory=lambda url, *, header, timeout: socket,
+        send_timeout=1.5,
+        receive_timeout=0.02,
+    )
+
+    transport.connect()
+    assert transport.receive_event() is None
+
+    accepted = transport.send_event(
+        {
+            "contentType": "AUDIO_CHUNK",
+            "content": {"eventType": "AUDIO_CHUNK", "audioBase64": "AQID"},
+        }
+    )
+
+    assert accepted is True
+    assert socket.timeout_history[-1] == 1.5
+
+
 def test_openclaw_transport_send_event_without_connection_records_error() -> None:
     transport = OpenClawRealtimeTransport(url="wss://openclaw.example/realtime", token="token")
 
@@ -413,6 +498,18 @@ def test_openclaw_playback_sink_reports_active_audio_window() -> None:
     assert sink.status()["active"] is False
 
 
+def test_openclaw_playback_sink_does_not_stack_grace_per_audio_frame() -> None:
+    clock = ManualClock(10.0)
+    sink = AplayPcmPlaybackSink(device="default", active_grace_s=0.1, clock=clock)
+    sink._ensure_process = lambda *, sample_rate, channels: None  # type: ignore[method-assign]
+
+    sink.play(AudioFrame(pcm=_pcm_constant(1000), duration_ms=200, sample_rate_hz=16000, channels=1))
+    clock.advance(0.05)
+    sink.play(AudioFrame(pcm=_pcm_constant(1000), duration_ms=200, sample_rate_hz=16000, channels=1))
+
+    assert sink.status()["active_until_s"] == pytest.approx(10.35)
+
+
 def test_openclaw_runtime_uses_long_playback_grace_to_prevent_speaker_echo() -> None:
     runtime = OpenClawRealtimeRuntime(
         NativeVoiceLoopConfig(
@@ -428,7 +525,7 @@ def test_openclaw_runtime_uses_long_playback_grace_to_prevent_speaker_echo() -> 
     )
 
     assert isinstance(runtime.playback_sink, AplayPcmPlaybackSink)
-    assert runtime.playback_sink.active_grace_s >= 2.5
+    assert runtime.playback_sink.active_grace_s >= 4.0
 
 
 def test_openclaw_echo_gate_suppresses_playback_echo_and_allows_barge_in() -> None:
