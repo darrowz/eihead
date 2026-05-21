@@ -30,6 +30,7 @@ DEFAULT_SCOPES = ["operator.read", "operator.write"]
 DEFAULT_CAPS = ["tool-events"]
 DEFAULT_SEND_TIMEOUT_S = 2.0
 MAX_RECEIVE_DRAIN_MESSAGES = 100
+TERMINAL_RELAY_SESSION_STATES = {"ended", "closed", "error"}
 
 
 class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
@@ -164,6 +165,15 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         ws = self._ws
         if ws is None:
             self.record_error(RuntimeError("websocket not connected"), context="send_event")
+            return False
+        if _is_terminal_session_state(self._session_state):
+            self.record_error(
+                RuntimeError(f"OpenClaw relay session is {self._session_state}"),
+                context="send_event",
+            )
+            reason = f"relay_session_{self._session_state}"
+            self._close_socket()
+            self.schedule_reconnect(reason)
             return False
         if not self._relay_session_id:
             self.record_error(RuntimeError("OpenClaw relay session is not ready"), context="send_event")
@@ -886,6 +896,10 @@ def _session_state_from_message(message_type: str, current: str) -> str:
     if normalized in {"error", "session.error"}:
         return "error"
     return current
+
+
+def _is_terminal_session_state(session_state: str) -> bool:
+    return str(session_state or "").strip().lower() in TERMINAL_RELAY_SESSION_STATES
 
 
 def _error_message(value: Any) -> str:

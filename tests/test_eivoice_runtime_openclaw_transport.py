@@ -250,6 +250,68 @@ def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope
     assert socket.closed is True
 
 
+def test_openclaw_transport_reconnects_instead_of_sending_audio_to_ended_relay_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENCLAW_REALTIME_TOKEN", "env-token")
+    clock = ManualClock(20.0)
+    socket = FakeWebSocket(
+        incoming=[
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {"type": "res", "id": "1", "ok": True, "payload": {"auth": {"role": "operator"}}},
+            {
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {
+                    "provider": "openai",
+                    "transport": "gateway-relay",
+                    "relaySessionId": "relay-1",
+                    "audio": {
+                        "inputEncoding": "pcm16",
+                        "inputSampleRateHz": 24000,
+                        "outputEncoding": "pcm16",
+                        "outputSampleRateHz": 24000,
+                    },
+                },
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
+        ]
+    )
+    transport = OpenClawRealtimeTransport(
+        url="wss://openclaw.example/realtime",
+        websocket_factory=lambda url, *, header, timeout: socket,
+        clock=clock,
+    )
+
+    transport.connect()
+    transport._session_state = "ended"
+
+    accepted = transport.send_event(
+        {
+            "uid": "user-1",
+            "mid": "mid-1",
+            "contentType": "AUDIO_CHUNK",
+            "content": {
+                "eventType": "AUDIO_CHUNK",
+                "index": 8,
+                "audioBase64": "AQID",
+                "durationMs": 40,
+                "sampleRateHz": 24000,
+                "channels": 1,
+            },
+        }
+    )
+
+    sent = [json.loads(str(item)) for item in socket.sent]
+    assert accepted is False
+    assert socket.closed is True
+    assert [item["method"] for item in sent] == ["connect", "talk.session.create", "talk.session.close"]
+    assert transport.status()["connection"]["state"] == "reconnect_wait"
+    assert transport.status()["reconnect"]["reason"] == "relay_session_ended"
+    assert transport.status()["openclaw_ws"]["session_state"] == "ended"
+
+
 def test_openclaw_device_auth_uses_epoch_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -1050,6 +1112,83 @@ def test_openclaw_runtime_retries_after_connect_failure() -> None:
     assert runtime._ensure_connected() is True
     assert connect_attempts == 2
     assert runtime.status()["openclaw_ws"]["connected"] is True
+
+
+def test_openclaw_runtime_reconnects_ended_session_and_rearms_local_wake_gate() -> None:
+    clock = ManualClock(200.0)
+
+    def _socket(relay_id: str, *, connect_id: str, session_id: str) -> FakeWebSocket:
+        return FakeWebSocket(
+            incoming=[
+                {"type": "event", "event": "connect.challenge", "payload": {"nonce": f"nonce-{relay_id}"}},
+                {"type": "res", "id": connect_id, "ok": True, "payload": {"auth": {"role": "operator"}}},
+                {
+                    "type": "res",
+                    "id": session_id,
+                    "ok": True,
+                    "payload": {
+                        "provider": "openai",
+                        "transport": "gateway-relay",
+                        "relaySessionId": relay_id,
+                        "audio": {
+                            "inputEncoding": "pcm16",
+                            "inputSampleRateHz": 24000,
+                            "outputEncoding": "pcm16",
+                            "outputSampleRateHz": 24000,
+                        },
+                    },
+                },
+                {"type": "event", "event": "talk.event", "payload": {"relaySessionId": relay_id, "type": "ready"}},
+            ]
+        )
+
+    sockets = [
+        _socket("relay-1", connect_id="1", session_id="2"),
+        _socket("relay-2", connect_id="4", session_id="5"),
+    ]
+
+    def _transport_factory(config: NativeVoiceLoopConfig) -> OpenClawRealtimeTransport:
+        return OpenClawRealtimeTransport(
+            url=config.openclaw_ws_url,
+            token="token",
+            websocket_factory=lambda url, *, header, timeout: sockets.pop(0),
+            clock=clock,
+        )
+
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(
+            openclaw_ws_url="wss://openclaw.example/realtime",
+            wake_word_required=True,
+        ),
+        transport_factory=_transport_factory,
+        capture_source=EmptyCaptureSource(),
+        playback_sink=FakePlaybackSink(),
+    )
+
+    runtime.audio_frontend.local_transcriber = FakeSegmentTranscriber("你好鸿途")
+    assert runtime._ensure_connected() is True
+    assert runtime.transport is not None
+    runtime.transport._session_state = "ended"
+    runtime.audio_frontend._conversation_active = True
+    runtime.audio_frontend._local_gate_last_status = "conversation_active"
+    runtime.audio_frontend._local_gate_segment_frames.append(
+        AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    )
+
+    assert runtime._ensure_connected() is False
+    readiness = runtime.audio_frontend.readiness()
+
+    assert readiness["localWakeGate"]["state"] == "armed"
+    assert readiness["localWakeGate"]["conversationActive"] is False
+    assert readiness["localWakeGate"]["lastGateReason"] == "openclaw_session_ended"
+    assert readiness["localWakeGate"]["segmentFrames"] == 0
+    assert runtime.transport.status()["connection"]["state"] == "reconnect_wait"
+    assert runtime.transport.status()["reconnect"]["reason"] == "relay_session_ended"
+
+    clock.advance(1.1)
+
+    assert runtime._ensure_connected() is True
+    assert runtime.transport.status()["openclaw_ws"]["session_state"] == "ready"
 
 
 def test_openclaw_runtime_session_config_includes_realtime_provider() -> None:

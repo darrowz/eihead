@@ -27,6 +27,7 @@ from eihead.eivoice_runtime.native_loop import (
 
 
 TransportFactory = Callable[[NativeVoiceLoopConfig], OpenClawRealtimeTransport]
+TERMINAL_OPENCLAW_SESSION_STATES = {"ended", "closed", "error"}
 
 
 class AplayPcmPlaybackSink:
@@ -412,6 +413,14 @@ class OpenClawPlaybackEchoGate:
         self._local_vad_silence_frames = 0
         self._local_vad_segment_frames = 0
 
+    def reset_conversation(self, *, reason: str = "reset") -> None:
+        self._conversation_active = not self.wake_word_required
+        self._local_gate_segment_frames.clear()
+        self._reset_local_vad()
+        self._last_muted = False
+        self._local_gate_last_reason = str(reason or "reset")
+        self._local_gate_last_status = "disabled" if not self.wake_word_required else "armed"
+
     def readiness(self) -> dict[str, Any]:
         vad_state = "disabled"
         if self.local_vad_enabled:
@@ -711,6 +720,11 @@ class OpenClawRealtimeRuntime:
         status = self.transport.status()
         state = str(_mapping(status.get("connection")).get("state") or status.get("state") or "")
         if state == "connected":
+            openclaw_ws = _mapping(status.get("openclaw_ws"))
+            session_state = str(openclaw_ws.get("session_state") or "").strip().lower()
+            if _is_terminal_openclaw_session_state(session_state):
+                self._handle_terminal_openclaw_session(session_state)
+                return False
             return True
         if state == "reconnect_wait" and not self.transport.ready_to_reconnect():
             return False
@@ -723,6 +737,14 @@ class OpenClawRealtimeRuntime:
             with self._lock:
                 self._last_error = str(exc)
             return False
+
+    def _handle_terminal_openclaw_session(self, session_state: str) -> None:
+        reason = f"relay_session_{str(session_state or 'ended').strip().lower() or 'ended'}"
+        self.audio_frontend.reset_conversation(reason="openclaw_session_ended")
+        if self.transport is None:
+            return
+        self.transport.close(reason)
+        self.transport.schedule_reconnect(reason)
 
     def _record_runtime_error(self, exc: BaseException) -> None:
         with self._lock:
@@ -1047,6 +1069,10 @@ def _empty_runtime_status() -> dict[str, Any]:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _is_terminal_openclaw_session_state(session_state: str) -> bool:
+    return str(session_state or "").strip().lower() in TERMINAL_OPENCLAW_SESSION_STATES
 
 
 def _recent_audio_active(payload: Mapping[str, Any], *, grace_s: float) -> bool:
