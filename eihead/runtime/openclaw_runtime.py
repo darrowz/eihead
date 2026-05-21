@@ -387,6 +387,11 @@ class OpenClawPlaybackEchoGate:
                 "reason": "wake_word_detected",
             }
         )
+        if _is_meaningful_active_transcript(remainder):
+            self._local_gate_replay_frames.extend(frames)
+            self._local_gate_last_reason = "wake_remainder_replayed"
+            self._local_gate_last_status = "conversation_active"
+            return self._pop_local_gate_replay_frame()
         return None
 
     def _emit_gate_event(self, payload: Mapping[str, Any]) -> None:
