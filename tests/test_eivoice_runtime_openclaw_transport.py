@@ -784,14 +784,89 @@ def test_openclaw_echo_gate_local_wake_gate_activates_then_streams_next_utteranc
     assert gate.process_capture(speech) is None
     assert gate.process_capture(quiet) is None
     assert gate.process_capture(quiet) is None
-    assert gate.process_capture(speech) is speech
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is speech
     readiness = gate.readiness()
 
     assert events[0]["type"] == "wake_detected"
     assert events[0]["reply_text"] == "我在。"
     assert readiness["localWakeGate"]["state"] == "active"
     assert readiness["localWakeGate"]["conversationActive"] is True
-    assert readiness["localWakeGate"]["lastTranscript"] == "你好鸿途"
+    assert readiness["localWakeGate"]["lastTranscript"] == "今天天气怎么样"
+    assert readiness["localWakeGate"]["lastGateReason"] == "active_utterance_replayed"
+
+
+def test_openclaw_echo_gate_local_wake_gate_buffers_active_utterance_until_asr_accepts() -> None:
+    sink = FakePlaybackSink()
+    events: list[dict[str, object]] = []
+    transcriber = FakeSegmentTranscriber("你好鸿途", "介绍下你自己")
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_transcriber=transcriber,
+        wake_word_required=True,
+        wake_words=("你好鸿途",),
+        end_phrases=("结束对话",),
+        on_gate_event=lambda payload: events.append(dict(payload)),
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+        local_vad_hangover_frames=1,
+    )
+    speech = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    first_replay = gate.process_capture(quiet)
+    second_replay = gate.process_capture(quiet)
+    readiness = gate.readiness()
+
+    assert first_replay is speech
+    assert second_replay is not None
+    assert readiness["localWakeGate"]["state"] == "active"
+    assert readiness["localWakeGate"]["lastTranscript"] == "介绍下你自己"
+    assert readiness["localWakeGate"]["lastGateReason"] == "active_utterance_replayed"
+    assert readiness["localVad"]["passedFrames"] == 2
+
+
+def test_openclaw_echo_gate_local_wake_gate_rejects_short_active_noise_before_upstream() -> None:
+    sink = FakePlaybackSink()
+    transcriber = FakeSegmentTranscriber("你好鸿途", "我。")
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_transcriber=transcriber,
+        wake_word_required=True,
+        wake_words=("你好鸿途",),
+        end_phrases=("结束对话",),
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+        local_vad_hangover_frames=1,
+    )
+    speech = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+    readiness = gate.readiness()
+
+    assert readiness["localWakeGate"]["state"] == "active"
+    assert readiness["localWakeGate"]["lastTranscript"] == "我。"
+    assert readiness["localWakeGate"]["lastGateReason"] == "active_transcript_rejected"
+    assert readiness["localVad"]["passedFrames"] == 0
 
 
 def test_openclaw_echo_gate_local_wake_gate_end_phrase_returns_to_sleep() -> None:
@@ -817,8 +892,8 @@ def test_openclaw_echo_gate_local_wake_gate_end_phrase_returns_to_sleep() -> Non
     assert gate.process_capture(speech) is None
     assert gate.process_capture(quiet) is None
     assert gate.process_capture(quiet) is None
-    assert gate.process_capture(speech) is speech
-    assert gate.process_capture(quiet) is quiet
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
     assert gate.process_capture(quiet) is None
     readiness = gate.readiness()
 

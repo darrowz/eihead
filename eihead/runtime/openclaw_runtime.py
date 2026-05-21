@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from array import array
+from collections import deque
 from collections.abc import Callable, Mapping
 import math
 from pathlib import Path
@@ -22,6 +23,7 @@ from eihead.eivoice_runtime.native_loop import (
     NativeVoiceLoopConfig,
     SherpaOnnxWindowTranscriber,
     _contains_spoken_phrase,
+    _normalize_spoken_phrase,
     _strip_wake_word_prefix,
 )
 
@@ -192,6 +194,7 @@ class OpenClawPlaybackEchoGate:
         self._local_vad_dropped_frames = 0
         self._local_vad_segment_frames = 0
         self._local_gate_segment_frames: list[AudioFrame] = []
+        self._local_gate_replay_frames: deque[AudioFrame] = deque()
         self._local_gate_last_transcript = ""
         self._local_gate_last_reason = ""
         self._local_gate_last_status = "disabled" if not self.wake_word_required else "armed"
@@ -223,6 +226,9 @@ class OpenClawPlaybackEchoGate:
         if not playback_active:
             self._speech_frames = 0
             if self.wake_word_required:
+                replay = self._pop_local_gate_replay_frame()
+                if replay is not None:
+                    return replay
                 return self._process_local_wake_gate(frame, rms=rms, peak=peak)
             if self.local_vad_enabled:
                 return self._process_local_vad(frame, rms=rms, peak=peak)
@@ -233,6 +239,7 @@ class OpenClawPlaybackEchoGate:
             self._speech_frames = 0
             self._reset_local_vad()
             self._local_gate_segment_frames.clear()
+            self._local_gate_replay_frames.clear()
             self._suppressed_frames += 1
             self._last_muted = True
             return None
@@ -280,9 +287,8 @@ class OpenClawPlaybackEchoGate:
             self._local_vad_segment_frames += 1
             self._local_gate_segment_frames.append(frame)
             if self._conversation_active:
-                self._local_vad_passed_frames += 1
-                self._last_muted = False
-                return frame
+                self._last_muted = True
+                return None
             self._local_vad_dropped_frames += 1
             self._last_muted = True
             return None
@@ -292,9 +298,8 @@ class OpenClawPlaybackEchoGate:
             self._local_vad_segment_frames += 1
             self._local_gate_segment_frames.append(frame)
             if self._conversation_active:
-                self._local_vad_passed_frames += 1
-                self._last_muted = False
-                return frame
+                self._last_muted = True
+                return None
             self._local_vad_dropped_frames += 1
             self._last_muted = True
             return None
@@ -337,6 +342,7 @@ class OpenClawPlaybackEchoGate:
         if self._conversation_active:
             if _contains_spoken_phrase(text, self.end_phrases):
                 self._conversation_active = False
+                self._local_gate_replay_frames.clear()
                 self._local_gate_end_detections += 1
                 self._local_gate_last_reason = "end_phrase"
                 self._local_gate_last_status = "conversation_ended"
@@ -350,8 +356,14 @@ class OpenClawPlaybackEchoGate:
                     }
                 )
             else:
-                self._local_gate_last_reason = reason
-                self._local_gate_last_status = "conversation_active"
+                if _is_meaningful_active_transcript(text):
+                    self._local_gate_replay_frames.extend(frames)
+                    self._local_gate_last_reason = "active_utterance_replayed"
+                    self._local_gate_last_status = "conversation_active"
+                    return self._pop_local_gate_replay_frame()
+                self._local_gate_dropped_segments += 1
+                self._local_gate_last_reason = "active_transcript_rejected"
+                self._local_gate_last_status = "conversation_active_filtered"
             return None
 
         remainder = _strip_wake_word_prefix(text, self.wake_words)
@@ -413,9 +425,18 @@ class OpenClawPlaybackEchoGate:
         self._local_vad_silence_frames = 0
         self._local_vad_segment_frames = 0
 
+    def _pop_local_gate_replay_frame(self) -> AudioFrame | None:
+        if not self._local_gate_replay_frames:
+            return None
+        frame = self._local_gate_replay_frames.popleft()
+        self._local_vad_passed_frames += 1
+        self._last_muted = False
+        return frame
+
     def reset_conversation(self, *, reason: str = "reset") -> None:
         self._conversation_active = not self.wake_word_required
         self._local_gate_segment_frames.clear()
+        self._local_gate_replay_frames.clear()
         self._reset_local_vad()
         self._last_muted = False
         self._local_gate_last_reason = str(reason or "reset")
@@ -474,6 +495,7 @@ class OpenClawPlaybackEchoGate:
                 "wakeDetections": self._local_gate_wake_detections,
                 "endDetections": self._local_gate_end_detections,
                 "segmentFrames": len(self._local_gate_segment_frames),
+                "replayFrames": len(self._local_gate_replay_frames),
                 "transcriber": self._local_transcriber_status(),
             },
             "playbackGate": {
@@ -1073,6 +1095,18 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 def _is_terminal_openclaw_session_state(session_state: str) -> bool:
     return str(session_state or "").strip().lower() in TERMINAL_OPENCLAW_SESSION_STATES
+
+
+def _is_meaningful_active_transcript(text: str) -> bool:
+    normalized = _normalize_spoken_phrase(text)
+    if not normalized:
+        return False
+    if normalized in {"我", "嗯", "啊", "哦", "好", "好的"}:
+        return False
+    cjk_count = sum(1 for char in normalized if "\u4e00" <= char <= "\u9fff")
+    if cjk_count:
+        return cjk_count >= 3
+    return len(normalized) >= 6
 
 
 def _recent_audio_active(payload: Mapping[str, Any], *, grace_s: float) -> bool:
