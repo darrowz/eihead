@@ -110,6 +110,36 @@ class FakeSegmentTranscriber:
         return {"provider": "fake_asr", "state": "ready", "calls": len(self.calls)}
 
 
+class FakeConnectedTextTransport:
+    def __init__(self) -> None:
+        self.sent_texts: list[str] = []
+
+    def status(self) -> dict[str, object]:
+        return {
+            "state": "connected",
+            "connection": {"state": "connected"},
+            "openclaw_ws": {
+                "connected": True,
+                "url": "wss://openclaw.example/realtime",
+                "session_state": "ready",
+                "session_id": "relay-1",
+                "last_user_transcript": "",
+                "last_assistant_transcript": "你好，我是鸿途。",
+                "latency_ms": {},
+            },
+        }
+
+    def close(self, reason: str | None = None) -> None:
+        return None
+
+    def cancel_output(self, reason: str) -> bool:
+        return True
+
+    def send_text(self, text: str) -> bool:
+        self.sent_texts.append(text)
+        return True
+
+
 def _pcm_constant(amplitude: int, samples: int = 160) -> bytes:
     return array("h", [int(amplitude)] * int(samples)).tobytes()
 
@@ -248,6 +278,62 @@ def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope
         "params": {"sessionId": "relay-1"},
     }
     assert socket.closed is True
+
+
+def test_openclaw_transport_sends_recognized_text_to_realtime_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENCLAW_REALTIME_TOKEN", "env-token")
+    socket = FakeWebSocket(
+        incoming=[
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {
+                "type": "res",
+                "id": "1",
+                "ok": True,
+                "payload": {"auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]}},
+            },
+            {
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {
+                    "provider": "openai",
+                    "transport": "gateway-relay",
+                    "relaySessionId": "relay-1",
+                    "audio": {
+                        "inputEncoding": "pcm16",
+                        "inputSampleRateHz": 24000,
+                        "outputEncoding": "pcm16",
+                        "outputSampleRateHz": 24000,
+                    },
+                },
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
+        ]
+    )
+    transport = OpenClawRealtimeTransport(
+        url="wss://openclaw.example/realtime",
+        websocket_factory=lambda url, *, header, timeout: socket,
+        clock=ManualClock(20.0),
+        client_platform="test",
+        client_device_family="unit",
+    )
+
+    transport.connect()
+    accepted = transport.send_text("  介绍下你自己  ")
+
+    assert accepted is True
+    sent = [json.loads(str(item)) for item in socket.sent]
+    assert sent[-1] == {
+        "type": "req",
+        "id": "3",
+        "method": "talk.session.sendText",
+        "params": {
+            "sessionId": "relay-1",
+            "text": "介绍下你自己",
+        },
+    }
 
 
 def test_openclaw_transport_reconnects_instead_of_sending_audio_to_ended_relay_session(
@@ -874,6 +960,51 @@ def test_openclaw_echo_gate_local_wake_gate_buffers_active_utterance_until_asr_a
     assert readiness["localVad"]["passedFrames"] == 2
 
 
+def test_openclaw_echo_gate_sends_active_utterance_text_when_event_handler_accepts() -> None:
+    sink = FakePlaybackSink()
+    events: list[dict[str, object]] = []
+    transcriber = FakeSegmentTranscriber("你好鸿途", "介绍下你自己")
+
+    def handle_event(payload: object) -> bool:
+        event = dict(payload) if isinstance(payload, dict) else {}
+        events.append(event)
+        return event.get("type") == "active_utterance_detected"
+
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_transcriber=transcriber,
+        wake_word_required=True,
+        wake_words=("你好鸿途",),
+        end_phrases=("结束对话",),
+        on_gate_event=handle_event,
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+        local_vad_hangover_frames=1,
+    )
+    speech = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+    readiness = gate.readiness()
+
+    assert [event["type"] for event in events] == ["wake_detected", "active_utterance_detected"]
+    assert events[-1]["text"] == "介绍下你自己"
+    assert readiness["localWakeGate"]["state"] == "armed"
+    assert readiness["localWakeGate"]["conversationActive"] is False
+    assert readiness["localWakeGate"]["lastGateReason"] == "active_utterance_sent_text"
+    assert readiness["localWakeGate"]["lastStatus"] == "armed_after_text"
+    assert readiness["localWakeGate"]["replayFrames"] == 0
+    assert readiness["localVad"]["passedFrames"] == 0
+
+
 def test_openclaw_echo_gate_local_wake_gate_rejects_short_active_noise_before_upstream() -> None:
     sink = FakePlaybackSink()
     transcriber = FakeSegmentTranscriber("你好鸿途", "我。")
@@ -1029,6 +1160,59 @@ def test_openclaw_runtime_local_wake_event_plays_configured_piper_ack(
     assert commands[0]["input"] == "我在。"
     assert commands[1]["command"][:4] == ["aplay", "-q", "-D", "plughw:CARD=SPA3700,DEV=0"]
     assert runtime._is_remote_output_active() is True
+
+
+def test_openclaw_runtime_local_gate_event_sends_text_to_openclaw() -> None:
+    transport = FakeConnectedTextTransport()
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(
+            openclaw_ws_url="wss://openclaw.example/realtime",
+            wake_word_required=True,
+        ),
+        transport_factory=lambda config: transport,  # type: ignore[return-value]
+        capture_source=EmptyCaptureSource(),
+        playback_sink=FakePlaybackSink(),
+    )
+
+    accepted = runtime._handle_local_gate_event(
+        {"type": "active_utterance_detected", "text": "介绍下你自己", "asr_ms": 101.2}
+    )
+
+    assert accepted is True
+    assert transport.sent_texts == ["介绍下你自己"]
+    assert runtime._last_local_gate_event is not None
+    assert runtime._last_local_gate_event["openclaw_text_sent"] is True
+    assert runtime._last_local_gate_event["text_send_ms"] >= 0
+
+
+def test_openclaw_runtime_status_uses_local_wake_gate_for_sleep_state_and_asr_latency() -> None:
+    transport = FakeConnectedTextTransport()
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(
+            openclaw_ws_url="wss://openclaw.example/realtime",
+            wake_word_required=True,
+        ),
+        transport_factory=lambda config: transport,  # type: ignore[return-value]
+        capture_source=EmptyCaptureSource(),
+        playback_sink=FakePlaybackSink(),
+    )
+    runtime._started = True
+    runtime.audio_frontend.local_transcriber = FakeSegmentTranscriber()
+    runtime.audio_frontend._conversation_active = False
+    runtime.audio_frontend._local_gate_last_transcript = "旁边电视的声音"
+    runtime.audio_frontend._local_gate_last_reason = "wake_word_required"
+    runtime.audio_frontend._local_gate_last_status = "waiting_for_wake_word"
+    runtime.audio_frontend._local_gate_last_asr_ms = 1860.2
+
+    status = runtime.status()
+
+    assert status["voice_dialogue"]["conversation_active"] is False
+    assert status["voice_dialogue"]["phase"] == "sleeping"
+    assert status["voice_dialogue"]["last_transcript"] == "旁边电视的声音"
+    assert status["voice_dialogue"]["last_gate_reason"] == "wake_word_required"
+    assert status["voice_dialogue"]["last_stage_latency_ms"]["listen_asr"] == 1860.2
+    assert status["wakeword"]["state"] == "armed"
+    assert status["wakeword"]["last_gate_reason"] == "wake_word_required"
 
 
 def test_openclaw_echo_gate_suppresses_when_remote_session_is_speaking() -> None:

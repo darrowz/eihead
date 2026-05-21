@@ -203,6 +203,47 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
             self._last_activity_at = self._clock()
         return True
 
+    def send_text(self, text: str) -> bool:
+        text_value = str(text or "").strip()
+        if not text_value:
+            self.record_error(ValueError("text is required"), context="send_text")
+            return False
+        ws = self._ws
+        if ws is None:
+            self.record_error(RuntimeError("websocket not connected"), context="send_text")
+            return False
+        if _is_terminal_session_state(self._session_state):
+            self.record_error(
+                RuntimeError(f"OpenClaw relay session is {self._session_state}"),
+                context="send_text",
+            )
+            reason = f"relay_session_{self._session_state}"
+            self._close_socket()
+            self.schedule_reconnect(reason)
+            return False
+        if not self._relay_session_id:
+            self.record_error(RuntimeError("OpenClaw relay session is not ready"), context="send_text")
+            return False
+        try:
+            self._send_request(
+                ws,
+                "talk.session.sendText",
+                {
+                    "sessionId": self._relay_session_id,
+                    "text": text_value,
+                },
+            )
+        except Exception as exc:
+            self.record_error(exc, context="send_text")
+            self._session_state = "error"
+            self._close_socket()
+            self.schedule_reconnect("send_text_error")
+            return False
+        with self._lock:
+            self._last_tx_ms = int(round(self._clock() * 1000))
+            self._last_activity_at = self._clock()
+        return True
+
     def receive_event(self, *, block: bool = False, timeout: float | None = None) -> dict[str, Any] | None:
         ws = self._ws
         if ws is None:

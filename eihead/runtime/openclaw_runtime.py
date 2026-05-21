@@ -162,7 +162,7 @@ class OpenClawPlaybackEchoGate:
         end_phrases: tuple[str, ...] = ("结束对话",),
         wake_ack_text: str = "我在。",
         end_ack_text: str = "好的，结束对话。",
-        on_gate_event: Callable[[Mapping[str, Any]], None] | None = None,
+        on_gate_event: Callable[[Mapping[str, Any]], Any] | None = None,
     ) -> None:
         self.playback_sink = playback_sink
         self.on_barge_in = on_barge_in
@@ -358,6 +358,18 @@ class OpenClawPlaybackEchoGate:
                 )
             else:
                 if _is_meaningful_active_transcript(text):
+                    if self._send_local_gate_text(
+                        {
+                            "type": "active_utterance_detected",
+                            "text": text,
+                            "asr_ms": self._local_gate_last_asr_ms,
+                            "reason": "active_utterance_detected",
+                        }
+                    ):
+                        self._conversation_active = False if self.wake_word_required else self._conversation_active
+                        self._local_gate_last_reason = "active_utterance_sent_text"
+                        self._local_gate_last_status = "armed_after_text" if self.wake_word_required else "conversation_active"
+                        return None
                     self._local_gate_replay_frames.extend(frames)
                     self._local_gate_rearm_after_replay = True
                     self._local_gate_last_reason = "active_utterance_replayed"
@@ -390,6 +402,20 @@ class OpenClawPlaybackEchoGate:
             }
         )
         if _is_meaningful_active_transcript(remainder):
+            if self._send_local_gate_text(
+                {
+                    "type": "wake_remainder_detected",
+                    "text": remainder,
+                    "transcript": text,
+                    "remainder": remainder,
+                    "asr_ms": self._local_gate_last_asr_ms,
+                    "reason": "wake_remainder_detected",
+                }
+            ):
+                self._conversation_active = False if self.wake_word_required else self._conversation_active
+                self._local_gate_last_reason = "wake_remainder_sent_text"
+                self._local_gate_last_status = "armed_after_text" if self.wake_word_required else "conversation_active"
+                return None
             self._local_gate_replay_frames.extend(frames)
             self._local_gate_rearm_after_replay = True
             self._local_gate_last_reason = "wake_remainder_replayed"
@@ -397,9 +423,13 @@ class OpenClawPlaybackEchoGate:
             return self._pop_local_gate_replay_frame()
         return None
 
-    def _emit_gate_event(self, payload: Mapping[str, Any]) -> None:
+    def _send_local_gate_text(self, payload: Mapping[str, Any]) -> bool:
+        return self._emit_gate_event(payload)
+
+    def _emit_gate_event(self, payload: Mapping[str, Any]) -> bool:
         if self.on_gate_event is not None:
-            self.on_gate_event(payload)
+            return bool(self.on_gate_event(payload))
+        return False
 
     def _process_local_vad(self, frame: AudioFrame, *, rms: float, peak: float) -> AudioFrame | None:
         if self._local_vad_active and self._local_vad_segment_frames >= self.local_vad_max_frames:
@@ -805,20 +835,29 @@ class OpenClawRealtimeRuntime:
                 "ts": time.time(),
             }
 
-    def _handle_local_gate_event(self, payload: Mapping[str, Any]) -> None:
+    def _handle_local_gate_event(self, payload: Mapping[str, Any]) -> bool:
         event = dict(payload)
         event["ts"] = time.time()
         reply_text = str(event.get("reply_text") or "")
         if reply_text:
             event["playback"] = self._play_local_gate_reply(reply_text)
+        event_type = str(event.get("type") or "")
+        text_sent = False
+        if event_type in {"active_utterance_detected", "wake_remainder_detected"}:
+            text_value = str(event.get("text") or "").strip()
+            if text_value and self.transport is not None and hasattr(self.transport, "send_text"):
+                started = time.perf_counter()
+                text_sent = bool(self.transport.send_text(text_value))
+                event["text_send_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
+            event["openclaw_text_sent"] = text_sent
         with self._lock:
             self._last_local_gate_event = event
-        event_type = str(event.get("type") or "")
         if event_type == "end_phrase_detected":
             if self.transport is not None:
                 self.transport.cancel_output("local_end_phrase")
             if self.runner is not None:
                 self.runner.interrupt_playback(reason="local_end_phrase", source="local_wake_gate")
+        return text_sent
 
     def _play_local_gate_reply(self, text: str) -> dict[str, Any]:
         text_value = str(text or "").strip()
@@ -981,19 +1020,38 @@ class OpenClawRealtimeRuntime:
 
     def _dialogue_status(self, *, running: bool, openclaw_ws: Mapping[str, Any]) -> dict[str, Any]:
         stage_latency = _openclaw_stage_latency(openclaw_ws)
+        frontend = self.audio_frontend.readiness()
+        gate = _mapping(frontend.get("localWakeGate"))
+        gate_conversation_active = bool(gate.get("conversationActive"))
+        local_asr_ms = _float_or_none(gate.get("lastAsrMs"))
+        if local_asr_ms is not None:
+            stage_latency["listen_asr"] = local_asr_ms
+        if self._last_local_gate_event:
+            text_send_ms = _float_or_none(self._last_local_gate_event.get("text_send_ms"))
+            if text_send_ms is not None:
+                stage_latency["text_send"] = text_send_ms
+        session_state = str(openclaw_ws.get("session_state") or "unknown")
+        if self.config.wake_word_required and not gate_conversation_active and session_state not in {"speaking", "thinking", "responding"}:
+            phase = "sleeping"
+        else:
+            phase = session_state
+        last_transcript = str(gate.get("lastTranscript") or openclaw_ws.get("last_user_transcript") or "")
         return {
             "enabled": True,
             "running": running,
-            "phase": str(openclaw_ws.get("session_state") or "unknown"),
-            "last_status": str(openclaw_ws.get("session_state") or "unknown"),
-            "last_transcript": str(openclaw_ws.get("last_user_transcript") or ""),
+            "phase": phase,
+            "last_status": session_state,
+            "last_transcript": last_transcript,
             "last_reply": str(openclaw_ws.get("last_assistant_transcript") or ""),
             "last_stage_latency_ms": stage_latency,
             "last_error": str(openclaw_ws.get("last_error") or ""),
-            "conversation_active": running,
+            "conversation_active": gate_conversation_active if self.config.wake_word_required else running,
             "wake_word_required": self.config.wake_word_required,
             "wake_words": list(self.config.wake_words),
             "end_phrases": list(self.config.end_phrases),
+            "last_gate_reason": str(gate.get("lastGateReason") or ""),
+            "last_gate_status": str(gate.get("lastStatus") or ""),
+            "local_gate": gate,
             "turn_count": 0,
             "current_round_id": self.config.dialogue_session_id,
             "dialogue": {
@@ -1006,15 +1064,21 @@ class OpenClawRealtimeRuntime:
     def _wakeword_status(self, *, running: bool, openclaw_ws: Mapping[str, Any]) -> dict[str, Any]:
         if not self.config.wake_word_required:
             state = "disabled"
-        elif running:
-            state = "active"
         else:
-            state = "armed"
+            gate = _mapping(self.audio_frontend.readiness().get("localWakeGate"))
+            if gate.get("conversationActive") is True:
+                state = "active"
+            else:
+                state = str(gate.get("state") or "armed")
         return {
             "enabled": self.config.wake_word_required,
             "state": state,
             "wake_words": list(self.config.wake_words),
             "end_phrases": list(self.config.end_phrases),
+            "conversation_active": state == "active",
+            "last_gate_reason": str(
+                _mapping(self.audio_frontend.readiness().get("localWakeGate")).get("lastGateReason") or ""
+            ),
             "readiness_message": self._readiness_message(openclaw_ws),
         }
 

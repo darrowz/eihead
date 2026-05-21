@@ -1420,6 +1420,7 @@ def _voice_chain_steps(latency_ms: Mapping[str, Any]) -> list[dict[str, Any]]:
         }
         for key, label in (
             ("listen_asr", "ASR 识别"),
+            ("text_send", "文本注入"),
             ("dialogue", "脑端回复"),
             ("speak", "TTS 播放"),
             ("total", "总耗时"),

@@ -454,6 +454,7 @@ def test_voice_diagnostics_builds_human_voice_chain_payload() -> None:
                     "last_reply": "语音链路已经正常唤醒，正在播报结果。",
                     "last_stage_latency_ms": {
                         "listen_asr": 121.5,
+                        "text_send": 8.25,
                         "dialogue": 345.75,
                         "speak": 678.25,
                         "total": 1145.5,
@@ -471,12 +472,14 @@ def test_voice_diagnostics_builds_human_voice_chain_payload() -> None:
     assert payload["voice_chain"]["last_tts_text"] == "语音链路已经正常唤醒，正在播报结果。"
     assert payload["voice_chain"]["latency_ms"] == {
         "listen_asr": 121.5,
+        "text_send": 8.25,
         "dialogue": 345.75,
         "speak": 678.25,
         "total": 1145.5,
     }
     assert payload["voice_chain"]["steps"] == [
         {"key": "listen_asr", "label": "ASR 识别", "latency_ms": 121.5},
+        {"key": "text_send", "label": "文本注入", "latency_ms": 8.25},
         {"key": "dialogue", "label": "脑端回复", "latency_ms": 345.75},
         {"key": "speak", "label": "TTS 播放", "latency_ms": 678.25},
         {"key": "total", "label": "总耗时", "latency_ms": 1145.5},
