@@ -682,6 +682,37 @@ def test_native_voice_loop_config_reads_honjia_audio_devices_and_lstm_model_type
     assert runtime is not None
 
 
+def test_native_voice_loop_config_preserves_empty_local_gate_ack_text(tmp_path: Path) -> None:
+    config_path = tmp_path / "eihead.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia",
+                "capabilities:",
+                "  software:",
+                "    asr:",
+                "      enabled: true",
+                "      provider: sherpa_onnx",
+                "      model_dir: /models/asr",
+                "      limits:",
+                "        streaming: true",
+                "    dialogue:",
+                "      enabled: true",
+                "      wake_word_required: true",
+                "      wake_ack_text: \"\"",
+                "      end_ack_text: \"\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_eihead_config(config_path)
+    loop_config = native_voice_loop_config_from_eihead_config(config)
+
+    assert loop_config.wake_ack_text == ""
+    assert loop_config.end_ack_text == ""
+
+
 def test_native_voice_runtime_is_not_attached_without_sherpa_model_dir() -> None:
     from eihead.runtime.config import parse_eihead_config
 

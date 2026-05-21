@@ -206,8 +206,14 @@ def native_voice_loop_config_from_eihead_config(config: Any) -> NativeVoiceLoopC
         ),
         wake_words=_tuple_text(dialogue_extra.get("wake_words") or dialogue_extra.get("wakeWords")) or ("你好鸿途",),
         end_phrases=_tuple_text(dialogue_extra.get("end_phrases") or dialogue_extra.get("endPhrases")) or ("结束对话",),
-        wake_ack_text=_text(dialogue_extra.get("wake_ack_text") or dialogue_extra.get("wakeAckText"), "我在。"),
-        end_ack_text=_text(dialogue_extra.get("end_ack_text") or dialogue_extra.get("endAckText"), "好的，结束对话。"),
+        wake_ack_text=_text_preserve_empty(
+            _first_present(dialogue_extra, "wake_ack_text", "wakeAckText"),
+            "我在。",
+        ),
+        end_ack_text=_text_preserve_empty(
+            _first_present(dialogue_extra, "end_ack_text", "endAckText"),
+            "好的，结束对话。",
+        ),
         tts_backend="minimax" if minimax_backend else ("piper" if piper_backend else tts_provider),
         tts_fallback_provider=_text(
             tts_extra.get("fallback_provider")
@@ -757,6 +763,19 @@ def _text(value: Any, default: str) -> str:
     if value in (None, ""):
         return default
     return str(value)
+
+
+def _text_preserve_empty(value: Any, default: str) -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+def _first_present(mapping: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping:
+            return mapping.get(key)
+    return None
 
 
 def _int(value: Any, default: int) -> int:

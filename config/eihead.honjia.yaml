@@ -115,8 +115,8 @@ capabilities:
         - 你好黄图
       end_phrases:
         - 结束对话
-      wake_ack_text: 我在。
-      end_ack_text: 好的，结束对话。
+      wake_ack_text: ""
+      end_ack_text: ""
       limits:
         protocol: eiprotocol
         transport: subprocess
