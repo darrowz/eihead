@@ -195,6 +195,7 @@ class OpenClawPlaybackEchoGate:
         self._local_vad_segment_frames = 0
         self._local_gate_segment_frames: list[AudioFrame] = []
         self._local_gate_replay_frames: deque[AudioFrame] = deque()
+        self._local_gate_rearm_after_replay = False
         self._local_gate_last_transcript = ""
         self._local_gate_last_reason = ""
         self._local_gate_last_status = "disabled" if not self.wake_word_required else "armed"
@@ -358,6 +359,7 @@ class OpenClawPlaybackEchoGate:
             else:
                 if _is_meaningful_active_transcript(text):
                     self._local_gate_replay_frames.extend(frames)
+                    self._local_gate_rearm_after_replay = True
                     self._local_gate_last_reason = "active_utterance_replayed"
                     self._local_gate_last_status = "conversation_active"
                     return self._pop_local_gate_replay_frame()
@@ -389,6 +391,7 @@ class OpenClawPlaybackEchoGate:
         )
         if _is_meaningful_active_transcript(remainder):
             self._local_gate_replay_frames.extend(frames)
+            self._local_gate_rearm_after_replay = True
             self._local_gate_last_reason = "wake_remainder_replayed"
             self._local_gate_last_status = "conversation_active"
             return self._pop_local_gate_replay_frame()
@@ -436,12 +439,18 @@ class OpenClawPlaybackEchoGate:
         frame = self._local_gate_replay_frames.popleft()
         self._local_vad_passed_frames += 1
         self._last_muted = False
+        if not self._local_gate_replay_frames and self._local_gate_rearm_after_replay:
+            self._local_gate_rearm_after_replay = False
+            if self.wake_word_required:
+                self._conversation_active = False
+                self._local_gate_last_status = "armed_after_replay"
         return frame
 
     def reset_conversation(self, *, reason: str = "reset") -> None:
         self._conversation_active = not self.wake_word_required
         self._local_gate_segment_frames.clear()
         self._local_gate_replay_frames.clear()
+        self._local_gate_rearm_after_replay = False
         self._reset_local_vad()
         self._last_muted = False
         self._local_gate_last_reason = str(reason or "reset")

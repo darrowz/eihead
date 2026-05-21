@@ -820,15 +820,18 @@ def test_openclaw_echo_gate_local_wake_gate_replays_wake_segment_when_it_has_rem
     assert gate.process_capture(speech) is None
     assert gate.process_capture(quiet) is None
     first_replay = gate.process_capture(quiet)
+    second_replay = gate.process_capture(quiet)
     readiness = gate.readiness()
 
     assert first_replay is speech
+    assert second_replay is not None
     assert events[0]["type"] == "wake_detected"
     assert events[0]["remainder"] == "介绍一下"
-    assert readiness["localWakeGate"]["state"] == "active"
-    assert readiness["localWakeGate"]["conversationActive"] is True
+    assert readiness["localWakeGate"]["state"] == "armed"
+    assert readiness["localWakeGate"]["conversationActive"] is False
     assert readiness["localWakeGate"]["lastGateReason"] == "wake_remainder_replayed"
-    assert readiness["localVad"]["passedFrames"] == 1
+    assert readiness["localWakeGate"]["lastStatus"] == "armed_after_replay"
+    assert readiness["localVad"]["passedFrames"] == 2
 
 
 def test_openclaw_echo_gate_local_wake_gate_buffers_active_utterance_until_asr_accepts() -> None:
@@ -863,9 +866,11 @@ def test_openclaw_echo_gate_local_wake_gate_buffers_active_utterance_until_asr_a
 
     assert first_replay is speech
     assert second_replay is not None
-    assert readiness["localWakeGate"]["state"] == "active"
+    assert readiness["localWakeGate"]["state"] == "armed"
+    assert readiness["localWakeGate"]["conversationActive"] is False
     assert readiness["localWakeGate"]["lastTranscript"] == "介绍下你自己"
     assert readiness["localWakeGate"]["lastGateReason"] == "active_utterance_replayed"
+    assert readiness["localWakeGate"]["lastStatus"] == "armed_after_replay"
     assert readiness["localVad"]["passedFrames"] == 2
 
 
