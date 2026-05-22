@@ -114,6 +114,7 @@ class FakeSegmentTranscriber:
 class FakeConnectedTextTransport:
     def __init__(self) -> None:
         self.sent_texts: list[str] = []
+        self.last_assistant_transcript = "你好，我是鸿途。"
 
     def status(self) -> dict[str, object]:
         return {
@@ -125,7 +126,7 @@ class FakeConnectedTextTransport:
                 "session_state": "ready",
                 "session_id": "relay-1",
                 "last_user_transcript": "",
-                "last_assistant_transcript": "你好，我是鸿途。",
+                "last_assistant_transcript": self.last_assistant_transcript,
                 "latency_ms": {},
             },
         }
@@ -1368,6 +1369,31 @@ def test_openclaw_runtime_local_gate_event_sends_text_to_openclaw() -> None:
     assert runtime._last_local_gate_event is not None
     assert runtime._last_local_gate_event["openclaw_text_sent"] is True
     assert runtime._last_local_gate_event["text_send_ms"] >= 0
+
+
+def test_openclaw_runtime_local_gate_event_drops_assistant_echo_text() -> None:
+    transport = FakeConnectedTextTransport()
+    transport.last_assistant_transcript = "我会把你的语音请求变成简洁自然的动作和回答。"
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(
+            openclaw_ws_url="wss://openclaw.example/realtime",
+            wake_word_required=True,
+        ),
+        transport_factory=lambda config: transport,  # type: ignore[return-value]
+        capture_source=EmptyCaptureSource(),
+        playback_sink=FakePlaybackSink(),
+    )
+
+    accepted = runtime._handle_local_gate_event(
+        {"type": "active_utterance_detected", "text": "把你的语音请求变成简洁自然", "asr_ms": 91.4}
+    )
+
+    assert accepted is True
+    assert transport.sent_texts == []
+    assert runtime._last_local_gate_event is not None
+    assert runtime._last_local_gate_event["openclaw_text_sent"] is False
+    assert runtime._last_local_gate_event["dropped_as_echo"] is True
+    assert runtime._last_local_gate_event["echo_source"] == "assistant_transcript"
 
 
 def test_openclaw_runtime_status_uses_local_wake_gate_for_sleep_state_and_asr_latency() -> None:

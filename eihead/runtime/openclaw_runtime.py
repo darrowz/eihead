@@ -850,7 +850,12 @@ class OpenClawRealtimeRuntime:
         text_sent = False
         if event_type in {"active_utterance_detected", "wake_remainder_detected"}:
             text_value = str(event.get("text") or "").strip()
-            if text_value and self.transport is not None and hasattr(self.transport, "send_text"):
+            assistant_echo = _assistant_echo_overlap(text_value, self._last_assistant_transcript())
+            if assistant_echo >= 0.6:
+                event["dropped_as_echo"] = True
+                event["echo_source"] = "assistant_transcript"
+                event["echo_overlap"] = round(assistant_echo, 3)
+            elif text_value and self.transport is not None and hasattr(self.transport, "send_text"):
                 started = time.perf_counter()
                 text_sent = bool(self.transport.send_text(text_value))
                 event["text_send_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
@@ -862,7 +867,14 @@ class OpenClawRealtimeRuntime:
                 self.transport.cancel_output("local_end_phrase")
             if self.runner is not None:
                 self.runner.interrupt_playback(reason="local_end_phrase", source="local_wake_gate")
-        return text_sent
+        return bool(event.get("dropped_as_echo")) or text_sent
+
+    def _last_assistant_transcript(self) -> str:
+        if self.transport is None:
+            return ""
+        status = _mapping(self.transport.status())
+        openclaw_ws = _mapping(status.get("openclaw_ws"))
+        return str(openclaw_ws.get("last_assistant_transcript") or "")
 
     def _play_local_gate_reply(self, text: str) -> dict[str, Any]:
         text_value = str(text or "").strip()
@@ -1190,6 +1202,33 @@ def _is_meaningful_active_transcript(text: str) -> bool:
     if cjk_count:
         return cjk_count >= 3
     return len(normalized) >= 6
+
+
+def _assistant_echo_overlap(text: str, assistant_text: str) -> float:
+    normalized = _normalize_spoken_phrase(text)
+    assistant = _normalize_spoken_phrase(assistant_text)
+    if not normalized or not assistant:
+        return 0.0
+    cjk_count = sum(1 for char in normalized if "\u4e00" <= char <= "\u9fff")
+    if cjk_count and cjk_count < 4:
+        return 0.0
+    if normalized in assistant:
+        return 1.0
+    if len(assistant) >= 4 and assistant in normalized:
+        return 1.0
+    ngrams = _char_ngrams(normalized, 2)
+    assistant_ngrams = _char_ngrams(assistant, 2)
+    if not ngrams or not assistant_ngrams:
+        return 0.0
+    return len(ngrams & assistant_ngrams) / len(ngrams)
+
+
+def _char_ngrams(text: str, size: int) -> set[str]:
+    value = str(text or "")
+    n = max(1, int(size))
+    if len(value) < n:
+        return {value} if value else set()
+    return {value[index : index + n] for index in range(0, len(value) - n + 1)}
 
 
 def _recent_audio_active(payload: Mapping[str, Any], *, grace_s: float) -> bool:
