@@ -626,13 +626,18 @@ def default_openclaw_decode_message(message: Mapping[str, Any]) -> dict[str, Any
         if relay_type == "audio":
             encoded = relay_payload.get("audioBase64") or relay_payload.get("audio_base64")
             if encoded:
+                audio_base64 = str(encoded)
                 return {
                     "contentType": "AUDIO_CHUNK",
                     "content": {
                         "eventType": "AUDIO_CHUNK",
-                        "audioBase64": str(encoded),
+                        "audioBase64": audio_base64,
                         "index": _optional_int(relay_payload.get("sequence"), relay_payload.get("index")) or 0,
-                        "durationMs": _optional_int(relay_payload.get("durationMs"), relay_payload.get("duration_ms")) or 60,
+                        "durationMs": _optional_int(
+                            relay_payload.get("durationMs"),
+                            relay_payload.get("duration_ms"),
+                        )
+                        or _pcm16_duration_ms_from_base64(audio_base64, sample_rate_hz=24000, channels=1),
                         "sampleRateHz": 24000,
                         "channels": 1,
                         "metadata": {
@@ -663,15 +668,19 @@ def default_openclaw_decode_message(message: Mapping[str, Any]) -> dict[str, Any
         or payload.get("audio_base64")
     )
     if encoded:
+        sample_rate_hz = _optional_int(payload.get("sample_rate_hz"), payload.get("sampleRateHz")) or 16000
+        channels = _optional_int(payload.get("channels")) or 1
+        audio_base64 = str(encoded)
         return {
             "contentType": "AUDIO_CHUNK",
             "content": {
                 "eventType": "AUDIO_CHUNK",
-                "audioBase64": str(encoded),
+                "audioBase64": audio_base64,
                 "index": _optional_int(payload.get("sequence"), payload.get("index")) or 0,
-                "durationMs": _optional_int(payload.get("duration_ms"), payload.get("durationMs")) or 60,
-                "sampleRateHz": _optional_int(payload.get("sample_rate_hz"), payload.get("sampleRateHz")) or 16000,
-                "channels": _optional_int(payload.get("channels")) or 1,
+                "durationMs": _optional_int(payload.get("duration_ms"), payload.get("durationMs"))
+                or _pcm16_duration_ms_from_base64(audio_base64, sample_rate_hz=sample_rate_hz, channels=channels),
+                "sampleRateHz": sample_rate_hz,
+                "channels": channels,
                 "metadata": {
                     "source": "openclaw_realtime",
                     "messageType": message_type or "audio",
@@ -797,6 +806,28 @@ def _delta_ms(start_ms: int | None, end_ms: int | None) -> int | None:
     if start_ms is None or end_ms is None:
         return None
     return max(0, int(end_ms) - int(start_ms))
+
+
+def _pcm16_duration_ms_from_base64(
+    encoded: str,
+    *,
+    sample_rate_hz: int,
+    channels: int,
+    fallback_ms: int = 60,
+) -> int:
+    try:
+        raw = base64.b64decode(str(encoded or ""))
+    except Exception:
+        return int(fallback_ms)
+    bytes_per_sample = 2
+    frame_width = max(1, int(channels)) * bytes_per_sample
+    if not raw or sample_rate_hz <= 0 or len(raw) < frame_width:
+        return int(fallback_ms)
+    samples_per_channel = len(raw) / frame_width
+    duration_ms = max(1, int(round(samples_per_channel * 1000.0 / float(sample_rate_hz))))
+    if duration_ms < 10:
+        return int(fallback_ms)
+    return duration_ms
 
 
 def _resolve_device_identity(

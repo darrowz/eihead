@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from array import array
+import base64
 import json
 import subprocess
 import time
@@ -529,6 +530,7 @@ def test_openclaw_device_auth_uses_epoch_wall_clock(monkeypatch: pytest.MonkeyPa
 
 def test_openclaw_transport_receives_audio_delta_and_updates_status() -> None:
     clock = ManualClock(20.0)
+    audio_base64 = base64.b64encode(b"\0" * 19200).decode("ascii")
     socket = FakeWebSocket(
         incoming=[
             {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
@@ -557,7 +559,7 @@ def test_openclaw_transport_receives_audio_delta_and_updates_status() -> None:
                     "payload": {
                         "relaySessionId": "relay-1",
                         "type": "audio",
-                        "audioBase64": "BAUG",
+                        "audioBase64": audio_base64,
                     },
                 }
             ),
@@ -582,9 +584,9 @@ def test_openclaw_transport_receives_audio_delta_and_updates_status() -> None:
         "contentType": "AUDIO_CHUNK",
             "content": {
                 "eventType": "AUDIO_CHUNK",
-                "audioBase64": "BAUG",
+                "audioBase64": audio_base64,
                 "index": 0,
-                "durationMs": 60,
+                "durationMs": 400,
                 "sampleRateHz": 24000,
                 "channels": 1,
                 "metadata": {
