@@ -194,7 +194,9 @@ def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope
                 "type": "res",
                 "id": "1",
                 "ok": True,
-                "payload": {"auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]}},
+                "payload": {
+                    "auth": {"role": "operator", "scopes": ["operator.read", "operator.write", "operator.admin"]}
+                },
             },
             {
                 "type": "res",
@@ -275,7 +277,7 @@ def test_openclaw_transport_connects_and_sends_audio_chunk_with_default_envelope
                     "deviceFamily": "unit",
                 },
                 "role": "operator",
-                "scopes": ["operator.read", "operator.write"],
+                "scopes": ["operator.read", "operator.write", "operator.admin"],
                 "caps": ["tool-events"],
                 "auth": {"token": "env-token"},
                 "userAgent": "eihead-openclaw-realtime",
@@ -330,7 +332,9 @@ def test_openclaw_transport_sends_recognized_text_to_realtime_session(
                 "type": "res",
                 "id": "1",
                 "ok": True,
-                "payload": {"auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]}},
+                "payload": {
+                    "auth": {"role": "operator", "scopes": ["operator.read", "operator.write", "operator.admin"]}
+                },
             },
             {
                 "type": "res",
