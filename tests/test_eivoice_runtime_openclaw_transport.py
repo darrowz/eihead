@@ -140,6 +140,45 @@ class FakeConnectedTextTransport:
         return True
 
 
+class FakePopenProcess:
+    class _Stdin:
+        def __init__(self) -> None:
+            self.payload = b""
+            self.closed = False
+
+        def write(self, payload: bytes) -> int:
+            self.payload += payload
+            return len(payload)
+
+        def flush(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _Stderr:
+        def read(self) -> bytes:
+            return b""
+
+    def __init__(self) -> None:
+        self.stdin = self._Stdin()
+        self.stderr = self._Stderr()
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> None:
+        return None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+    def kill(self) -> None:
+        self.killed = True
+
+
 def _pcm_constant(amplitude: int, samples: int = 160) -> bytes:
     return array("h", [int(amplitude)] * int(samples)).tobytes()
 
@@ -660,7 +699,30 @@ def test_openclaw_playback_sink_reports_active_audio_window() -> None:
     assert sink.status()["active"] is False
 
 
-def test_openclaw_playback_sink_does_not_stack_grace_per_audio_frame() -> None:
+def test_openclaw_playback_sink_keeps_initial_window_when_starting_aplay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = ManualClock(20.0)
+    processes: list[FakePopenProcess] = []
+
+    def fake_popen(*args: object, **kwargs: object) -> FakePopenProcess:
+        process = FakePopenProcess()
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr("eihead.runtime.openclaw_runtime.subprocess.Popen", fake_popen)
+    sink = AplayPcmPlaybackSink(device="default", active_grace_s=0.1, clock=clock)
+
+    sink.play(AudioFrame(pcm=_pcm_constant(1000), duration_ms=200, sample_rate_hz=16000, channels=1))
+
+    status = sink.status()
+    assert status["active"] is True
+    assert status["queued_audio_until_s"] == pytest.approx(20.2)
+    assert status["active_until_s"] == pytest.approx(20.3)
+    assert processes[0].stdin.payload
+
+
+def test_openclaw_playback_sink_accumulates_queued_audio_without_stacking_grace() -> None:
     clock = ManualClock(10.0)
     sink = AplayPcmPlaybackSink(device="default", active_grace_s=0.1, clock=clock)
     sink._ensure_process = lambda *, sample_rate, channels: None  # type: ignore[method-assign]
@@ -669,7 +731,7 @@ def test_openclaw_playback_sink_does_not_stack_grace_per_audio_frame() -> None:
     clock.advance(0.05)
     sink.play(AudioFrame(pcm=_pcm_constant(1000), duration_ms=200, sample_rate_hz=16000, channels=1))
 
-    assert sink.status()["active_until_s"] == pytest.approx(10.35)
+    assert sink.status()["active_until_s"] == pytest.approx(10.5)
 
 
 def test_openclaw_runtime_uses_long_playback_grace_to_prevent_speaker_echo() -> None:

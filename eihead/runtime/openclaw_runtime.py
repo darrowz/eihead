@@ -50,6 +50,7 @@ class AplayPcmPlaybackSink:
         self._last_error = ""
         self._last_play_at: float | None = None
         self._last_frame_duration_ms: int | None = None
+        self._queued_audio_until = 0.0
         self._active_until = 0.0
 
     def play(self, frame: AudioFrame) -> None:
@@ -71,6 +72,7 @@ class AplayPcmPlaybackSink:
         process = self._process
         self._process = None
         self._format = None
+        self._queued_audio_until = 0.0
         self._active_until = 0.0
         if process is None:
             return
@@ -98,6 +100,7 @@ class AplayPcmPlaybackSink:
             "running": self._process is not None and self._process.poll() is None,
             "active": now <= self._active_until,
             "active_until_s": self._active_until,
+            "queued_audio_until_s": self._queued_audio_until,
             "last_play_at_s": self._last_play_at,
             "last_frame_duration_ms": self._last_frame_duration_ms,
             "sample_rate": self._format[0] if self._format else None,
@@ -110,13 +113,15 @@ class AplayPcmPlaybackSink:
         duration_s = max(0.0, float(frame.duration_ms) / 1000.0)
         self._last_play_at = now
         self._last_frame_duration_ms = int(frame.duration_ms)
-        self._active_until = max(self._active_until, now + duration_s + max(0.0, self.active_grace_s))
+        self._queued_audio_until = max(now, self._queued_audio_until) + duration_s
+        self._active_until = self._queued_audio_until + max(0.0, self.active_grace_s)
 
     def _ensure_process(self, *, sample_rate: int, channels: int) -> None:
         audio_format = (int(sample_rate), int(channels))
         if self._process is not None and self._process.poll() is None and self._format == audio_format:
             return
-        self.stop()
+        if self._process is not None:
+            self.stop()
         self._format = audio_format
         self._process = subprocess.Popen(
             [
