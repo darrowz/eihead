@@ -841,6 +841,8 @@ def test_honjia_template_selects_openclaw_realtime_without_importing_eibrain(
     assert loop_config.transport_provider == "openclaw_realtime"
     assert loop_config.dialogue_backend == "openclaw_realtime"
     assert loop_config.fallback_transport_provider == "eibrain_subprocess"
+    assert loop_config.wake_words == ("鸿途", "宏图", "洪图", "黄土", "黄图")
+    assert loop_config.end_phrases == ("结束对话",)
     assert runtime is not None
     assert runtime.status()["transport"]["transport"] == "openclaw_realtime"
 

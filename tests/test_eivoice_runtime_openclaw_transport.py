@@ -913,11 +913,52 @@ def test_openclaw_echo_gate_local_wake_gate_replays_wake_segment_when_it_has_rem
     assert second_replay is not None
     assert events[0]["type"] == "wake_detected"
     assert events[0]["remainder"] == "介绍一下"
-    assert readiness["localWakeGate"]["state"] == "armed"
-    assert readiness["localWakeGate"]["conversationActive"] is False
+    assert readiness["localWakeGate"]["state"] == "active"
+    assert readiness["localWakeGate"]["conversationActive"] is True
     assert readiness["localWakeGate"]["lastGateReason"] == "wake_remainder_replayed"
-    assert readiness["localWakeGate"]["lastStatus"] == "armed_after_replay"
+    assert readiness["localWakeGate"]["lastStatus"] == "conversation_active"
     assert readiness["localVad"]["passedFrames"] == 2
+
+
+def test_openclaw_echo_gate_keeps_conversation_active_after_wake_remainder_text_is_sent() -> None:
+    sink = FakePlaybackSink()
+    events: list[dict[str, object]] = []
+    transcriber = FakeSegmentTranscriber("鸿途介绍一下你自己")
+
+    def handle_event(payload: object) -> bool:
+        event = dict(payload) if isinstance(payload, dict) else {}
+        events.append(event)
+        return event.get("type") == "wake_remainder_detected"
+
+    gate = OpenClawPlaybackEchoGate(
+        playback_sink=sink,
+        on_barge_in=lambda payload: None,
+        local_transcriber=transcriber,
+        wake_word_required=True,
+        wake_words=("鸿途",),
+        end_phrases=("结束对话",),
+        on_gate_event=handle_event,
+        local_vad_enabled=True,
+        local_vad_rms_threshold=0.1,
+        local_vad_peak_threshold=0.2,
+        local_vad_hangover_frames=1,
+    )
+    speech = AudioFrame(pcm=_pcm_constant(10000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    quiet = AudioFrame(pcm=_pcm_constant(500), duration_ms=120, sample_rate_hz=16000, channels=1)
+
+    assert gate.process_capture(speech) is None
+    assert gate.process_capture(quiet) is None
+    assert gate.process_capture(quiet) is None
+    readiness = gate.readiness()
+
+    assert [event["type"] for event in events] == ["wake_detected", "wake_remainder_detected"]
+    assert events[-1]["text"] == "介绍一下你自己"
+    assert readiness["localWakeGate"]["state"] == "active"
+    assert readiness["localWakeGate"]["conversationActive"] is True
+    assert readiness["localWakeGate"]["lastGateReason"] == "wake_remainder_sent_text"
+    assert readiness["localWakeGate"]["lastStatus"] == "conversation_active"
+    assert readiness["localWakeGate"]["wakeWords"] == ["鸿途"]
+    assert readiness["localWakeGate"]["replayFrames"] == 0
 
 
 def test_openclaw_echo_gate_local_wake_gate_buffers_active_utterance_until_asr_accepts() -> None:
@@ -952,11 +993,11 @@ def test_openclaw_echo_gate_local_wake_gate_buffers_active_utterance_until_asr_a
 
     assert first_replay is speech
     assert second_replay is not None
-    assert readiness["localWakeGate"]["state"] == "armed"
-    assert readiness["localWakeGate"]["conversationActive"] is False
+    assert readiness["localWakeGate"]["state"] == "active"
+    assert readiness["localWakeGate"]["conversationActive"] is True
     assert readiness["localWakeGate"]["lastTranscript"] == "介绍下你自己"
     assert readiness["localWakeGate"]["lastGateReason"] == "active_utterance_replayed"
-    assert readiness["localWakeGate"]["lastStatus"] == "armed_after_replay"
+    assert readiness["localWakeGate"]["lastStatus"] == "conversation_active"
     assert readiness["localVad"]["passedFrames"] == 2
 
 
@@ -997,10 +1038,10 @@ def test_openclaw_echo_gate_sends_active_utterance_text_when_event_handler_accep
 
     assert [event["type"] for event in events] == ["wake_detected", "active_utterance_detected"]
     assert events[-1]["text"] == "介绍下你自己"
-    assert readiness["localWakeGate"]["state"] == "armed"
-    assert readiness["localWakeGate"]["conversationActive"] is False
+    assert readiness["localWakeGate"]["state"] == "active"
+    assert readiness["localWakeGate"]["conversationActive"] is True
     assert readiness["localWakeGate"]["lastGateReason"] == "active_utterance_sent_text"
-    assert readiness["localWakeGate"]["lastStatus"] == "armed_after_text"
+    assert readiness["localWakeGate"]["lastStatus"] == "conversation_active"
     assert readiness["localWakeGate"]["replayFrames"] == 0
     assert readiness["localVad"]["passedFrames"] == 0
 

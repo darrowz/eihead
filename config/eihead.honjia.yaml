@@ -108,11 +108,11 @@ capabilities:
       brain_instance_id: honxin
       wake_word_required: true
       wake_words:
-        - 你好鸿途
-        - 你好宏图
-        - 你好洪图
-        - 你好黄土
-        - 你好黄图
+        - 鸿途
+        - 宏图
+        - 洪图
+        - 黄土
+        - 黄图
       end_phrases:
         - 结束对话
       wake_ack_text: ""

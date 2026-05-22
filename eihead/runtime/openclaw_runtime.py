@@ -366,12 +366,12 @@ class OpenClawPlaybackEchoGate:
                             "reason": "active_utterance_detected",
                         }
                     ):
-                        self._conversation_active = False if self.wake_word_required else self._conversation_active
+                        self._conversation_active = True
                         self._local_gate_last_reason = "active_utterance_sent_text"
-                        self._local_gate_last_status = "armed_after_text" if self.wake_word_required else "conversation_active"
+                        self._local_gate_last_status = "conversation_active"
                         return None
                     self._local_gate_replay_frames.extend(frames)
-                    self._local_gate_rearm_after_replay = True
+                    self._local_gate_rearm_after_replay = False
                     self._local_gate_last_reason = "active_utterance_replayed"
                     self._local_gate_last_status = "conversation_active"
                     return self._pop_local_gate_replay_frame()
@@ -412,12 +412,12 @@ class OpenClawPlaybackEchoGate:
                     "reason": "wake_remainder_detected",
                 }
             ):
-                self._conversation_active = False if self.wake_word_required else self._conversation_active
+                self._conversation_active = True
                 self._local_gate_last_reason = "wake_remainder_sent_text"
-                self._local_gate_last_status = "armed_after_text" if self.wake_word_required else "conversation_active"
+                self._local_gate_last_status = "conversation_active"
                 return None
             self._local_gate_replay_frames.extend(frames)
-            self._local_gate_rearm_after_replay = True
+            self._local_gate_rearm_after_replay = False
             self._local_gate_last_reason = "wake_remainder_replayed"
             self._local_gate_last_status = "conversation_active"
             return self._pop_local_gate_replay_frame()
