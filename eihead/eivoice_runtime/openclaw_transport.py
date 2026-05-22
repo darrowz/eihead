@@ -86,6 +86,7 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
         self.client_device_family = _normalize_device_auth_metadata(
             client_device_family or platform_module.machine()
         )
+        self.gateway_protocol_version = _gateway_protocol_version(self.protocol)
         self.locale = str(locale or "zh-CN")
         self.device_identity = _resolve_device_identity(device_identity, device_identity_path)
         self.device_signer = device_signer or _default_device_signer
@@ -370,8 +371,8 @@ class OpenClawRealtimeTransport(InMemoryVoiceStreamTransport):
 
     def _connect_gateway(self, ws: Any, *, nonce: str) -> None:
         params: dict[str, Any] = {
-            "minProtocol": GATEWAY_PROTOCOL_VERSION,
-            "maxProtocol": GATEWAY_PROTOCOL_VERSION,
+            "minProtocol": self.gateway_protocol_version,
+            "maxProtocol": self.gateway_protocol_version,
             "client": {
                 "id": self.client_id,
                 "version": self.client_version,
@@ -858,6 +859,13 @@ def _normalize_device_auth_metadata(value: str | None) -> str:
     if not text:
         return ""
     return "".join(chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in text)
+
+
+def _gateway_protocol_version(value: str) -> int:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return max(1, int(text))
+    return GATEWAY_PROTOCOL_VERSION
 
 
 def _default_device_signer(private_key_pem: str, payload: str) -> str:

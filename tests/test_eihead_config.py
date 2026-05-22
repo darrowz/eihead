@@ -24,6 +24,8 @@ def test_template_loads_runtime_monitor_devices_and_legacy_paths() -> None:
     assert config.devices.neck == "/dev/i2c-1"
     assert config.legacy.eibrain_config_path == "config/eibrain.honjia.yaml"
     assert config.legacy.body_runtime_config_path == "config/eibrain.honjia.yaml"
+    assert config.capabilities.software["dialogue"].extra["ws_url"] == "ws://127.0.0.1:18789"
+    assert config.capabilities.software["dialogue"].extra["ws_protocol"] == "3"
 
 
 def test_load_eihead_config_expands_env_and_parses_ports(tmp_path, monkeypatch) -> None:

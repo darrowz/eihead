@@ -89,10 +89,10 @@ capabilities:
       provider: openclaw_realtime
       transport_provider: ${EIHEAD_VOICE_TRANSPORT_PROVIDER:-openclaw_realtime}
       fallback_transport_provider: ${EIHEAD_VOICE_FALLBACK_PROVIDER:-eibrain_subprocess}
-      ws_url: ${EIHEAD_OPENCLAW_WS_URL:-ws://100.110.190.107:18789}
+      ws_url: ${EIHEAD_OPENCLAW_WS_URL:-ws://127.0.0.1:18789}
       token_env_var: ${EIHEAD_OPENCLAW_TOKEN_ENV_VAR:-OPENCLAW_REALTIME_TOKEN}
       realtime_provider: ${EIHEAD_OPENCLAW_PROVIDER:-openai}
-      ws_protocol: ${EIHEAD_OPENCLAW_WS_PROTOCOL:-}
+      ws_protocol: ${EIHEAD_OPENCLAW_WS_PROTOCOL:-3}
       barge_in_enabled: ${EIHEAD_OPENCLAW_BARGE_IN_ENABLED:-false}
       voice: ${EIHEAD_OPENCLAW_VOICE:-Zephyr}
       brain_agent: ${EIHEAD_OPENCLAW_BRAIN_AGENT:-enabled}

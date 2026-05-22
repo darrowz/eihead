@@ -375,6 +375,46 @@ def test_openclaw_transport_sends_recognized_text_to_realtime_session(
     }
 
 
+def test_openclaw_transport_can_use_configured_gateway_protocol_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENCLAW_REALTIME_TOKEN", "env-token")
+    socket = FakeWebSocket(
+        incoming=[
+            {"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}},
+            {"type": "res", "id": "1", "ok": True, "payload": {"auth": {"role": "operator"}}},
+            {
+                "type": "res",
+                "id": "2",
+                "ok": True,
+                "payload": {
+                    "provider": "openai",
+                    "transport": "gateway-relay",
+                    "relaySessionId": "relay-1",
+                    "audio": {
+                        "inputEncoding": "pcm16",
+                        "inputSampleRateHz": 24000,
+                        "outputEncoding": "pcm16",
+                        "outputSampleRateHz": 24000,
+                    },
+                },
+            },
+            {"type": "event", "event": "talk.event", "payload": {"relaySessionId": "relay-1", "type": "ready"}},
+        ]
+    )
+    transport = OpenClawRealtimeTransport(
+        url="wss://openclaw.example/realtime",
+        websocket_factory=lambda url, *, header, timeout: socket,
+        protocol="3",
+    )
+
+    transport.connect()
+
+    connect = json.loads(str(socket.sent[0]))
+    assert connect["params"]["minProtocol"] == 3
+    assert connect["params"]["maxProtocol"] == 3
+
+
 def test_openclaw_transport_reconnects_instead_of_sending_audio_to_ended_relay_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
