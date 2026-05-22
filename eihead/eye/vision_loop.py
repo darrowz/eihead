@@ -137,6 +137,7 @@ def run_vision_loop(
         else GStreamerHailoRealtimeAdapter.from_native_gstreamer(realtime_config)
     )
     identity_matcher, memory_adapter = _identity_runtime_from_config(config)
+    last_identity_observations: list[dict[str, Any]] = []
     stop_requested = False
 
     def request_stop(_signum: int, _frame: Any) -> None:
@@ -180,7 +181,9 @@ def run_vision_loop(
                 evidence=evidence,
                 matcher=identity_matcher,
                 memory_adapter=memory_adapter,
+                previous_observations=last_identity_observations,
             )
+            last_identity_observations = [dict(item) for item in identity_observations]
             payload = build_vision_state_payload(
                 status,
                 config=realtime_config,
@@ -288,6 +291,7 @@ def _identity_observations_from_evidence(
     evidence: Mapping[str, Any],
     matcher: FaceIdentityMatcher | None,
     memory_adapter: IdentityMemoryAdapter | None = None,
+    previous_observations: list[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if matcher is None or not isinstance(evidence, Mapping):
         return []
@@ -302,6 +306,10 @@ def _identity_observations_from_evidence(
     )
     face_crops = evidence.get("face_crops")
     if not isinstance(face_crops, list):
+        return []
+    if not face_crops:
+        if evidence.get("throttled") and previous_observations:
+            return [dict(item) for item in previous_observations if isinstance(item, Mapping)]
         return []
     observations: list[dict[str, Any]] = []
     for index, crop in enumerate(face_crops):

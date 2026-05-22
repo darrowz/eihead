@@ -119,6 +119,40 @@ def test_identity_observations_match_face_crops_and_record_known_memory(tmp_path
     assert memory.observations[0]["person_id"] == "person-darrow"
 
 
+def test_identity_observations_reuse_previous_during_evidence_throttle(tmp_path: Path) -> None:
+    registry = JsonIdentityRegistry(tmp_path / "people.json")
+    matcher = FaceIdentityMatcher(
+        registry=registry,
+        embedding_provider=StaticFaceEmbeddingProvider({}, provider_id="test"),
+        threshold=0.85,
+    )
+    previous = [
+        {
+            "known": False,
+            "match_source": "embedding_unavailable",
+            "frame_id": "frame-1",
+            "crop": {"path": str(tmp_path / "frame-1-face-0.jpg")},
+        }
+    ]
+
+    throttled = _identity_observations_from_evidence(
+        {"status": "tracking", "last_frame_id": "frame-2"},
+        evidence={"frame": {"path": str(tmp_path / "frame-1-frame.jpg")}, "face_crops": [], "throttled": True},
+        matcher=matcher,
+        previous_observations=previous,
+    )
+    fresh_empty = _identity_observations_from_evidence(
+        {"status": "tracking", "last_frame_id": "frame-3"},
+        evidence={"frame": {"path": str(tmp_path / "frame-3-frame.jpg")}, "face_crops": []},
+        matcher=matcher,
+        previous_observations=previous,
+    )
+
+    assert throttled == previous
+    assert throttled is not previous
+    assert fresh_empty == []
+
+
 class _FakeMemoryAdapter:
     def __init__(self) -> None:
         self.observations: list[dict[str, object]] = []
