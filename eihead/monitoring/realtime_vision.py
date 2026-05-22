@@ -144,6 +144,9 @@ def build_realtime_vision_payload(
         "events": diagnostic["events"],
         "event_count": diagnostic["event_count"],
         "event_summary": diagnostic["event_summary"],
+        "identity_observations": diagnostic["identity_observations"],
+        "identity_count": diagnostic["identity_count"],
+        "identity_summary": diagnostic["identity_summary"],
         "score_labels": diagnostic["score_labels"],
         "target": diagnostic["target"],
         "target_center": diagnostic["target_center"],
@@ -290,6 +293,7 @@ def _build_realtime_diagnostic(
     )
     tracks = _tracks_payload(observation)
     events = _events_payload(observation)
+    identity_observations = _identity_observations_payload(observation)
     detections_summary = _detections_summary(filtered_detections, source_freshness=source_freshness)
     health_state = _health_state(source_freshness=source_freshness, degraded=degraded, stale=stale)
     overlay = _build_visual_overlay(
@@ -362,6 +366,9 @@ def _build_realtime_diagnostic(
         "events": events,
         "event_count": events["count"],
         "event_summary": events["summary"],
+        "identity_observations": identity_observations,
+        "identity_count": len(identity_observations),
+        "identity_summary": _identity_summary(identity_observations),
         "score_labels": score_labels,
         "target": target,
         "target_center": target.get("center") if target else None,
@@ -682,6 +689,27 @@ def _events_payload(observation: Mapping[str, Any] | None) -> dict[str, Any]:
         "items": events,
         "summary": _items_summary(events, label_keys=("event_type", "eventType", "type", "name", "label")),
     }
+
+
+def _identity_observations_payload(observation: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    raw_identities = _first_nested_present(observation, "identity_observations", "identities")
+    return _normalized_items(raw_identities)
+
+
+def _identity_summary(identity_observations: list[dict[str, Any]]) -> str:
+    if not identity_observations:
+        return "none"
+    parts: list[str] = []
+    for item in identity_observations:
+        known = _truthy(_first_present(item, "known", "is_known"))
+        label = _string_or_none(
+            _first_present(item, "display_name", "displayName", "person_id", "personId", "match_source")
+        )
+        if not label:
+            label = "known" if known else "unknown"
+        confidence = _number_or_none(_first_present(item, "confidence", "score"))
+        parts.append(_score_label(label, confidence) if confidence else label)
+    return ", ".join(parts)
 
 
 def _scene_payload(observation: Mapping[str, Any] | None) -> dict[str, Any]:

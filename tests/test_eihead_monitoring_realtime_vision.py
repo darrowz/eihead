@@ -114,6 +114,37 @@ def test_realtime_vision_payload_overlay_exposes_live_frame_evidence() -> None:
     }
 
 
+def test_realtime_vision_payload_exposes_identity_observations() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "frame_id": "frame-identity-1",
+            "identity_observations": [
+                {
+                    "known": False,
+                    "match_source": "embedding_unavailable",
+                    "confidence": 0.0,
+                },
+                {
+                    "known": True,
+                    "person_id": "person-darrow",
+                    "display_name": "Darrow",
+                    "confidence": 0.96,
+                },
+            ],
+        },
+        timestamp=1000.0,
+        source="eye_realtime",
+    )
+
+    assert payload["identity_count"] == 2
+    assert payload["identity_observations"][0]["match_source"] == "embedding_unavailable"
+    assert payload["identity_observations"][1]["person_id"] == "person-darrow"
+    assert payload["identity_summary"] == "embedding_unavailable, Darrow 0.96"
+
+
 def test_realtime_vision_payload_overlay_accepts_protocol_normalized_list_xywh_bbox() -> None:
     payload = build_realtime_vision_payload(
         {
