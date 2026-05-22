@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 import time
 from typing import Any
@@ -818,6 +819,65 @@ def test_native_voice_runtime_can_select_openclaw_realtime_provider(tmp_path: Pa
     assert status["openclaw_ws"]["last_rx_ms"] is None
     assert status["openclaw_ws"]["last_tx_ms"] is None
     assert status["openclaw_ws"]["session_state"] == "idle"
+
+
+def test_honjia_template_selects_openclaw_realtime_without_importing_eibrain(
+    monkeypatch: Any,
+) -> None:
+    original_import = builtins.__import__
+
+    def reject_eibrain_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "eibrain" or name.startswith("eibrain."):
+            raise AssertionError(f"openclaw realtime path imported {name}")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_eibrain_import)
+
+    config_path = Path(__file__).resolve().parents[1] / "config" / "eihead.honjia.yaml"
+    config = load_eihead_config(config_path)
+    loop_config = native_voice_loop_config_from_eihead_config(config)
+    runtime = build_native_voice_runtime(config)
+
+    assert loop_config.transport_provider == "openclaw_realtime"
+    assert loop_config.dialogue_backend == "openclaw_realtime"
+    assert loop_config.fallback_transport_provider == "eibrain_subprocess"
+    assert runtime is not None
+    assert runtime.status()["transport"]["transport"] == "openclaw_realtime"
+
+
+def test_eibrain_subprocess_fallback_provider_stays_explicit(tmp_path: Path) -> None:
+    config_path = tmp_path / "eihead.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia",
+                "capabilities:",
+                "  software:",
+                "    dialogue:",
+                "      enabled: true",
+                "      provider: openclaw_realtime",
+                "      transport_provider: openclaw_realtime",
+                "      fallback_transport_provider: eibrain_subprocess",
+                "      command: /opt/eihead/current/.venv/bin/python",
+                "      module: apps.cognitive_runtime",
+                "      cwd: /home/darrow/dev-project/eibrain",
+                "      config_path: /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml",
+                "      pythonpath: /home/darrow/dev-project/eibrain:/dev-project/eiprotocol",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_eihead_config(config_path)
+    loop_config = native_voice_loop_config_from_eihead_config(config)
+
+    assert loop_config.transport_provider == "openclaw_realtime"
+    assert loop_config.fallback_transport_provider == "eibrain_subprocess"
+    assert loop_config.dialogue_command == "/opt/eihead/current/.venv/bin/python"
+    assert loop_config.dialogue_module == "apps.cognitive_runtime"
+    assert loop_config.dialogue_cwd == "/home/darrow/dev-project/eibrain"
+    assert loop_config.dialogue_config_path == "/home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml"
+    assert loop_config.dialogue_pythonpath == "/home/darrow/dev-project/eibrain:/dev-project/eiprotocol"
 
 
 def test_native_voice_runtime_can_be_disabled_for_monitor_process(

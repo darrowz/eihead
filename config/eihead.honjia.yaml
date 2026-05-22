@@ -86,9 +86,9 @@ capabilities:
         languages: [zh]
     dialogue:
       enabled: true
-      provider: eibrain_subprocess
-      transport_provider: ${EIHEAD_VOICE_TRANSPORT_PROVIDER:-legacy_native}
-      fallback_transport_provider: ${EIHEAD_VOICE_FALLBACK_PROVIDER:-}
+      provider: openclaw_realtime
+      transport_provider: ${EIHEAD_VOICE_TRANSPORT_PROVIDER:-openclaw_realtime}
+      fallback_transport_provider: ${EIHEAD_VOICE_FALLBACK_PROVIDER:-eibrain_subprocess}
       ws_url: ${EIHEAD_OPENCLAW_WS_URL:-ws://100.110.190.107:18789}
       token_env_var: ${EIHEAD_OPENCLAW_TOKEN_ENV_VAR:-OPENCLAW_REALTIME_TOKEN}
       realtime_provider: ${EIHEAD_OPENCLAW_PROVIDER:-openai}
@@ -119,7 +119,8 @@ capabilities:
       end_ack_text: ""
       limits:
         protocol: eiprotocol
-        transport: subprocess
+        transport: openclaw_realtime
+        fallback_transport: eibrain_subprocess
     vision_backend:
       enabled: true
       backend: hailo

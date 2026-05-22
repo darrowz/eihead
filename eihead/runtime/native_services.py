@@ -698,7 +698,9 @@ def _normalize_transport_provider(value: Any) -> str:
     normalized = _text(value, "").strip().lower()
     if normalized == "openclaw_realtime":
         return "openclaw_realtime"
-    if normalized in {"", "legacy_native", "native", "subprocess", "eibrain_subprocess"}:
+    if normalized in {"subprocess", "eibrain_subprocess"}:
+        return "eibrain_subprocess"
+    if normalized in {"", "legacy_native", "native"}:
         return "legacy_native"
     return normalized
 

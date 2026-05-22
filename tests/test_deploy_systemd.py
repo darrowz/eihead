@@ -34,3 +34,10 @@ def test_monitor_unit_proxies_voice_from_runtime_without_starting_voice_loop() -
     assert "Environment=EIHEAD_RUNTIME_URL=http://127.0.0.1:18081" in text
     assert "Environment=EIHEAD_NATIVE_VOICE_RUNTIME_DISABLED=1" in text
     assert "Environment=EIHEAD_MONITOR_PROXY_RUNTIME_VOICE=1" in text
+
+
+def test_runtime_unit_selects_openclaw_realtime_with_explicit_eibrain_fallback() -> None:
+    text = _read("deploy/systemd/eihead-runtime.service")
+
+    assert "Environment=EIHEAD_VOICE_TRANSPORT_PROVIDER=openclaw_realtime" in text
+    assert "Environment=EIHEAD_VOICE_FALLBACK_PROVIDER=eibrain_subprocess" in text
