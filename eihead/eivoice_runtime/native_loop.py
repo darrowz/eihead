@@ -1245,6 +1245,8 @@ def _wake_word_candidates(wake_word: str) -> tuple[str, ...]:
         prefix = _normalize_spoken_phrase(greeting)
         if wake.startswith(prefix) and len(wake) > len(prefix):
             candidates.append(wake[len(prefix) :])
+        elif wake:
+            candidates.append(f"{prefix}{wake}")
     return tuple(dict.fromkeys(candidates))
 
 
