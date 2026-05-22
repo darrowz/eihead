@@ -430,6 +430,40 @@ def test_native_gstreamer_adapter_wires_reader_and_hailo_metadata_parser() -> No
     assert payload["detection_scores"] == [0.88]
 
 
+def test_adapter_records_evidence_from_same_realtime_sample_and_detections(tmp_path) -> None:
+    sample = _FakeEvidenceSample()
+    frame = RealtimeVisionFrame(
+        frame_id="native-2",
+        timestamp=110.0,
+        width=320,
+        height=240,
+        source="gstreamer_hailo",
+        payload=sample,
+    )
+    config = GStreamerHailoRealtimeConfig(evidence_dir=str(tmp_path))
+    adapter = GStreamerHailoRealtimeAdapter(
+        config,
+        device_exists=lambda _path: True,
+        gst_available=lambda: True,
+        frame_reader=lambda: frame,
+        detection_reader=lambda _frame: [
+            {"label": "face", "score": 0.77, "bbox": {"x_min": 0.25, "y_min": 0.25, "x_max": 0.75, "y_max": 0.75}}
+        ],
+        clock=lambda: 111.0,
+    )
+
+    status = adapter.poll()
+    evidence = adapter.last_evidence()
+
+    assert status.status == "ok"
+    assert (tmp_path / "native-2-frame.jpg").read_bytes() == b"\xff\xd8frame\xff\xd9"
+    assert (tmp_path / "native-2-face-0.jpg").read_bytes() == b"\xff\xd8crop\xff\xd9"
+    assert evidence["frame"]["path"] == str(tmp_path / "native-2-frame.jpg")
+    assert evidence["frame"]["frame_id"] == "native-2"
+    assert evidence["face_crops"][0]["path"] == str(tmp_path / "native-2-face-0.jpg")
+    assert sample.crop_requests[0]["bbox"] == {"x_min": 0.25, "y_min": 0.25, "x_max": 0.75, "y_max": 0.75}
+
+
 class _FakeNativeFrameReader:
     def __init__(self) -> None:
         self.started = 0
@@ -451,6 +485,18 @@ class _FakeNativeFrameReader:
 class _FakeSample:
     def get_buffer(self) -> object:
         return object()
+
+
+class _FakeEvidenceSample:
+    def __init__(self) -> None:
+        self.crop_requests: list[dict[str, object]] = []
+
+    def get_jpeg_bytes(self) -> bytes:
+        return b"\xff\xd8frame\xff\xd9"
+
+    def crop_jpeg_bytes(self, *, bbox: dict[str, float], frame_width: int | None, frame_height: int | None) -> bytes:
+        self.crop_requests.append({"bbox": bbox, "frame_width": frame_width, "frame_height": frame_height})
+        return b"\xff\xd8crop\xff\xd9"
 
 
 class _FakeHailoModule:

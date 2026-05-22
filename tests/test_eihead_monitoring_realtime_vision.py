@@ -85,6 +85,35 @@ def test_realtime_vision_payload_exposes_visual_overlay_for_box_diagnostics() ->
     }
 
 
+def test_realtime_vision_payload_overlay_exposes_live_frame_evidence() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "frame_id": "frame-evidence-1",
+            "evidence": {
+                "frame": {
+                    "path": "/tmp/eibrain-vision/evidence/frame-evidence-1-frame.jpg",
+                    "mime_type": "image/jpeg",
+                }
+            },
+        },
+        timestamp=1000.0,
+        source="eye_realtime",
+    )
+
+    assert payload["overlay"]["frame"] == {
+        "width": None,
+        "height": None,
+        "frame_id": "frame-evidence-1",
+        "image_available": True,
+        "image_message": "live frame evidence: /tmp/eibrain-vision/evidence/frame-evidence-1-frame.jpg",
+        "image_path": "/tmp/eibrain-vision/evidence/frame-evidence-1-frame.jpg",
+        "mime_type": "image/jpeg",
+    }
+
+
 def test_realtime_vision_payload_overlay_accepts_protocol_normalized_list_xywh_bbox() -> None:
     payload = build_realtime_vision_payload(
         {

@@ -128,3 +128,18 @@ capabilities:
       limits:
         realtime: true
         max_fps: 15
+    visual_identity:
+      enabled: ${EIHEAD_VISUAL_IDENTITY_ENABLED:-true}
+      provider: onnx_face_embedding
+      model_path: ${EIHEAD_FACE_EMBEDDING_MODEL_PATH:-}
+      registry_path: ${EIHEAD_VISUAL_IDENTITY_REGISTRY_PATH:-/var/lib/eihead/identity/people.json}
+      match_threshold: ${EIHEAD_VISUAL_IDENTITY_THRESHOLD:-0.85}
+      memory:
+        enabled: ${EIHEAD_VISUAL_IDENTITY_MEMORY_ENABLED:-true}
+        endpoint: ${EIHEAD_EIMEMORY_RPC_URL:-http://honxin:8091/}
+        timeout_s: ${EIHEAD_EIMEMORY_RPC_TIMEOUT_S:-2.0}
+        scope:
+          agent_id: honxin
+          workspace_id: honjia
+          user_id: darrow
+          hardware_node: honjia

@@ -977,6 +977,8 @@ def _build_visual_overlay(
 ) -> dict[str, Any]:
     frame_width = _frame_dimension(observation, "width", "frame_width", "image_width")
     frame_height = _frame_dimension(observation, "height", "frame_height", "image_height")
+    evidence_frame = _evidence_frame(observation)
+    image_path = _string_or_none(_first_present(evidence_frame, "path", "uri")) if evidence_frame else None
     normalized_boxes = [
         box
         for box in (
@@ -996,14 +998,31 @@ def _build_visual_overlay(
             "width": frame_width,
             "height": frame_height,
             "frame_id": _frame_id(observation),
-            "image_available": False,
-            "image_message": "no live frame image yet",
+            "image_available": bool(image_path),
+            "image_message": f"live frame evidence: {image_path}" if image_path else "no live frame image yet",
+            **({"image_path": image_path} if image_path else {}),
+            **({"mime_type": evidence_frame.get("mime_type")} if evidence_frame and evidence_frame.get("mime_type") else {}),
         },
         "stream_ready": bool(stream_ready),
         "normalized_boxes": normalized_boxes,
         "score_labels": score_labels,
         "top_target": top_target,
     }
+
+
+def _evidence_frame(observation: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(observation, Mapping):
+        return None
+    for container in (observation, observation.get("status_payload")):
+        if not isinstance(container, Mapping):
+            continue
+        evidence = container.get("evidence")
+        if not isinstance(evidence, Mapping):
+            continue
+        frame = evidence.get("frame")
+        if isinstance(frame, Mapping):
+            return dict(frame)
+    return None
 
 
 def _frame_dimension(observation: Mapping[str, Any] | None, *keys: str) -> int | float | None:

@@ -58,6 +58,9 @@ class GStreamerHailoRealtimeConfig:
     mode: str = REALTIME_STREAM_MODE
     appsink_name: str = "eihead_realtime_sink"
     max_frame_age_s: float | None = 2.0
+    evidence_dir: str = "/tmp/eibrain-vision/evidence"
+    evidence_enabled: bool = True
+    evidence_face_crops_enabled: bool = True
 
     @property
     def device_paths(self) -> tuple[str, str]:
@@ -265,6 +268,7 @@ class GStreamerHailoRealtimeAdapter:
         frame_reader: FrameReader | None = None,
         detection_reader: DetectionReader | None = None,
         clock: Callable[[], float] = time.time,
+        evidence_writer: Any | None = None,
     ) -> None:
         self.config = config or GStreamerHailoRealtimeConfig()
         self._device_exists = device_exists or _default_device_exists
@@ -273,6 +277,12 @@ class GStreamerHailoRealtimeAdapter:
         self._detection_reader = detection_reader
         self._parser_state: dict[str, Any] = {"parse_error_count": 0, "errors": []}
         self._native_frame_reader = None
+        self._last_evidence: dict[str, Any] = {}
+        self._evidence_writer = evidence_writer
+        if self._evidence_writer is None and self.config.evidence_enabled:
+            from .gstreamer import GStreamerEvidenceWriter
+
+            self._evidence_writer = GStreamerEvidenceWriter(output_dir=self.config.evidence_dir, clock=clock)
         self.frame_source = GStreamerHailoFrameSource(
             self.config,
             device_exists=self._device_exists,
@@ -410,6 +420,9 @@ class GStreamerHailoRealtimeAdapter:
     def build_pipeline_description(self) -> str:
         return self.config.build_pipeline_description()
 
+    def last_evidence(self) -> dict[str, Any]:
+        return dict(self._last_evidence)
+
     def status(self) -> RealtimeEyeStatus:
         readiness = self.readiness()
         if not readiness.ready:
@@ -451,6 +464,7 @@ class GStreamerHailoRealtimeAdapter:
             )
             return self._last_status
         if isinstance(payload, Mapping):
+            self._record_evidence()
             self._last_status = _status_from_payload(
                 {
                     **dict(payload),
@@ -468,6 +482,31 @@ class GStreamerHailoRealtimeAdapter:
             parser_state=self._parser_state,
         )
         return self._last_status
+
+    def _record_evidence(self) -> None:
+        self._last_evidence = {}
+        if self._evidence_writer is None:
+            return
+        frame = getattr(self._pipeline, "_last_frame", None)
+        if not isinstance(frame, RealtimeVisionFrame) or not frame.is_realtime:
+            return
+        detections = getattr(self._pipeline, "_last_detections", [])
+        if not isinstance(detections, list):
+            detections = []
+        try:
+            evidence = self._evidence_writer.export(
+                frame,
+                detections=detections,
+                include_face_crops=self.config.evidence_face_crops_enabled,
+            )
+        except Exception as exc:
+            self._last_evidence = {
+                "error": f"evidence export failed: {exc.__class__.__name__}: {exc}",
+                "frame_id": frame.frame_id,
+            }
+            return
+        if isinstance(evidence, Mapping) and evidence:
+            self._last_evidence = dict(evidence)
 
     def _initial_status(self) -> RealtimeEyeStatus:
         readiness = self.readiness()

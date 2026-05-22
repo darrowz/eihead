@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Generator
 
+import pytest
+
 from eihead.eye import gstreamer
 from eihead.eye.realtime import RealtimeVisionFrame
 
@@ -79,6 +81,93 @@ def test_read_frame_returns_none_when_no_sample(monkeypatch) -> None:
         reader.start()
         assert reader.read_frame() is None
         assert fake.appsink.emitted == [("try-pull-sample", (250_000_000,))]
+
+
+def test_evidence_writer_saves_current_sample_frame_and_face_crop(tmp_path) -> None:
+    sample = _FakeEvidenceSample(frame_bytes=b"\xff\xd8frame\xff\xd9", crop_bytes=b"\xff\xd8crop\xff\xd9")
+    frame = RealtimeVisionFrame(
+        frame_id="cam/1",
+        timestamp=25.5,
+        width=640,
+        height=480,
+        source="gstreamer_hailo",
+        payload=sample,
+    )
+    writer = gstreamer.GStreamerEvidenceWriter(output_dir=tmp_path, clock=lambda: 30.0)
+
+    evidence = writer.export(
+        frame,
+        detections=[{"label": "face", "score": 0.91, "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.4, "y_max": 0.6}}],
+    )
+
+    frame_path = tmp_path / "cam-1-frame.jpg"
+    crop_path = tmp_path / "cam-1-face-0.jpg"
+    assert frame_path.read_bytes() == b"\xff\xd8frame\xff\xd9"
+    assert crop_path.read_bytes() == b"\xff\xd8crop\xff\xd9"
+    assert evidence["frame"] == {
+        "path": str(frame_path),
+        "frame_id": "cam/1",
+        "captured_at_ts": 25.5,
+        "written_at_ts": 30.0,
+        "source": "gstreamer_hailo",
+        "sample_source": "appsink_payload",
+        "mime_type": "image/jpeg",
+        "width": 640,
+        "height": 480,
+    }
+    assert evidence["face_crops"] == [
+        {
+            "path": str(crop_path),
+            "frame_id": "cam/1",
+            "label": "face",
+            "score": 0.91,
+            "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.4, "y_max": 0.6},
+            "mime_type": "image/jpeg",
+        }
+    ]
+    assert sample.crop_requests == [
+        {
+            "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.4, "y_max": 0.6},
+            "frame_width": 640,
+            "frame_height": 480,
+        }
+    ]
+
+
+def test_evidence_writer_maps_raw_rgb_gstreamer_sample_to_jpegs(tmp_path) -> None:
+    np = pytest.importorskip("numpy")
+    cv2 = pytest.importorskip("cv2")
+    raw = np.zeros((4, 6, 3), dtype=np.uint8)
+    raw[:, :, 0] = 255
+    sample = _FakeRawRgbSample(width=6, height=4, payload=raw.tobytes())
+    frame = RealtimeVisionFrame(
+        frame_id="raw-rgb-1",
+        timestamp=40.0,
+        width=6,
+        height=4,
+        source="gstreamer_hailo",
+        payload=sample,
+    )
+    writer = gstreamer.GStreamerEvidenceWriter(output_dir=tmp_path, clock=lambda: 41.0)
+
+    evidence = writer.export(
+        frame,
+        detections=[
+            {"label": "face", "score": 0.8, "bbox": {"x_min": 0.0, "y_min": 0.0, "x_max": 0.5, "y_max": 0.5}}
+        ],
+    )
+
+    frame_bytes = (tmp_path / "raw-rgb-1-frame.jpg").read_bytes()
+    crop_bytes = (tmp_path / "raw-rgb-1-face-0.jpg").read_bytes()
+    decoded_frame = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    decoded_crop = cv2.imdecode(np.frombuffer(crop_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert frame_bytes.startswith(b"\xff\xd8")
+    assert crop_bytes.startswith(b"\xff\xd8")
+    assert decoded_frame.shape[:2] == (4, 6)
+    assert decoded_crop.shape[:2] == (2, 3)
+    assert sample.buffer.unmapped is True
+    assert evidence["frame"]["sample_source"] == "appsink_payload"
+    assert evidence["face_crops"][0]["bbox"] == {"x_min": 0.0, "y_min": 0.0, "x_max": 0.5, "y_max": 0.5}
 
 
 class _FakeGstreamerEnvironment:
@@ -202,3 +291,54 @@ def _fake_sample(*, frame_id: str, pts: float, width: int, height: int):
             return frame_id
 
     return _Sample(pts)
+
+
+class _FakeEvidenceSample:
+    def __init__(self, *, frame_bytes: bytes, crop_bytes: bytes) -> None:
+        self.frame_bytes = frame_bytes
+        self.crop_bytes = crop_bytes
+        self.crop_requests: list[dict[str, object]] = []
+
+    def get_jpeg_bytes(self) -> bytes:
+        return self.frame_bytes
+
+    def crop_jpeg_bytes(self, *, bbox: dict[str, float], frame_width: int | None, frame_height: int | None) -> bytes:
+        self.crop_requests.append({"bbox": bbox, "frame_width": frame_width, "frame_height": frame_height})
+        return self.crop_bytes
+
+
+class _FakeRawRgbSample:
+    def __init__(self, *, width: int, height: int, payload: bytes) -> None:
+        self.width = width
+        self.height = height
+        self.buffer = _FakeRawBuffer(payload)
+
+    def get_buffer(self) -> "_FakeRawBuffer":
+        return self.buffer
+
+    def get_caps(self) -> "_FakeRawCaps":
+        return _FakeRawCaps(width=self.width, height=self.height, pixel_format="RGB")
+
+
+class _FakeRawBuffer:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.unmapped = False
+
+    def map(self, _flags: object):
+        return True, SimpleNamespace(data=self.payload)
+
+    def unmap(self, _map_info: object) -> None:
+        self.unmapped = True
+
+
+class _FakeRawCaps:
+    def __init__(self, *, width: int, height: int, pixel_format: str) -> None:
+        self.structure = {
+            "width": width,
+            "height": height,
+            "format": pixel_format,
+        }
+
+    def get_structure(self, _index: int) -> dict[str, object]:
+        return self.structure
