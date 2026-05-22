@@ -275,6 +275,17 @@ class OpenClawPlaybackEchoGate:
         self._last_muted = True
         return None
 
+    def discard_capture(self, *, reason: str = "discard_capture") -> None:
+        self._speech_frames = 0
+        self._local_gate_segment_frames.clear()
+        self._local_gate_replay_frames.clear()
+        self._local_gate_rearm_after_replay = False
+        self._reset_local_vad()
+        self._last_muted = True
+        self._local_gate_last_reason = str(reason or "discard_capture")
+        if self._conversation_active:
+            self._local_gate_last_status = "conversation_active_capture_suspended"
+
     def _process_local_wake_gate(self, frame: AudioFrame, *, rms: float, peak: float) -> AudioFrame | None:
         if self.local_transcriber is None:
             self._local_gate_last_status = "gate_unavailable"
@@ -634,6 +645,7 @@ class OpenClawRealtimeRuntime:
         self._last_barge_in: dict[str, Any] | None = None
         self._last_local_gate_event: dict[str, Any] | None = None
         self._local_output_active_until = 0.0
+        self._capture_suspended_for_output = False
 
     def start(self) -> None:
         if not self.config.enabled:
@@ -762,9 +774,21 @@ class OpenClawRealtimeRuntime:
     def _step_runtime_once(self) -> dict[str, bool]:
         if self.runner is None:
             return {}
-        if self._is_output_phase():
+        output_phase = self._is_output_phase()
+        if output_phase:
+            self._suspend_capture_for_output()
             return self._step_output_once()
+        self._capture_suspended_for_output = False
         return self.runner.step_once()
+
+    def _suspend_capture_for_output(self) -> None:
+        if self._capture_suspended_for_output:
+            return
+        self.capture_source.stop()
+        discard = getattr(self.audio_frontend, "discard_capture", None)
+        if callable(discard):
+            discard(reason="output_phase")
+        self._capture_suspended_for_output = True
 
     def _step_output_once(self) -> dict[str, bool]:
         if self.runner is None:

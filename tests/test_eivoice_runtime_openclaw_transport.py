@@ -72,6 +72,22 @@ class EmptyCaptureSource:
         return {"running": False}
 
 
+class CountingCaptureSource:
+    def __init__(self) -> None:
+        self.reads = 0
+        self.stops = 0
+
+    def read_frame(self) -> None:
+        self.reads += 1
+        return None
+
+    def stop(self) -> None:
+        self.stops += 1
+
+    def status(self) -> dict[str, object]:
+        return {"running": self.reads > 0, "stops": self.stops}
+
+
 class RaisingCaptureSource:
     def read_frame(self) -> None:
         raise AssertionError("capture should not run while output is active")
@@ -139,6 +155,12 @@ class FakeConnectedTextTransport:
 
     def send_text(self, text: str) -> bool:
         self.sent_texts.append(text)
+        return True
+
+    def receive_event(self) -> None:
+        return None
+
+    def send_event(self, event: object) -> bool:
         return True
 
 
@@ -797,6 +819,30 @@ def test_openclaw_runtime_uses_long_playback_grace_to_prevent_speaker_echo() -> 
 
     assert isinstance(runtime.playback_sink, AplayPcmPlaybackSink)
     assert runtime.playback_sink.active_grace_s >= 4.0
+
+
+def test_openclaw_runtime_stops_capture_while_output_is_active_to_drop_arecord_echo_buffer() -> None:
+    capture = CountingCaptureSource()
+    sink = FakePlaybackSink()
+    sink.active = True
+    runtime = OpenClawRealtimeRuntime(
+        NativeVoiceLoopConfig(openclaw_ws_url="wss://openclaw.example/realtime"),
+        transport_factory=lambda config: FakeConnectedTextTransport(),  # type: ignore[return-value]
+        capture_source=capture,  # type: ignore[arg-type]
+        playback_sink=sink,
+    )
+    runtime.audio_frontend._conversation_active = True
+    runtime.audio_frontend._local_vad_active = True
+    runtime.audio_frontend._local_gate_segment_frames.append(
+        AudioFrame(pcm=_pcm_constant(12000), duration_ms=120, sample_rate_hz=16000, channels=1)
+    )
+
+    runtime._step_runtime_once()
+    runtime._step_runtime_once()
+
+    assert capture.stops == 1
+    assert capture.reads == 0
+    assert runtime.audio_frontend.readiness()["localWakeGate"]["segmentFrames"] == 0
 
 
 def test_openclaw_echo_gate_suppresses_playback_echo_and_allows_barge_in() -> None:
