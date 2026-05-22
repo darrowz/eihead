@@ -61,6 +61,9 @@ class GStreamerHailoRealtimeConfig:
     evidence_dir: str = "/tmp/eibrain-vision/evidence"
     evidence_enabled: bool = True
     evidence_face_crops_enabled: bool = True
+    evidence_min_interval_s: float = 1.0
+    evidence_max_files: int = 240
+    evidence_max_age_s: float = 600.0
 
     @property
     def device_paths(self) -> tuple[str, str]:
@@ -282,7 +285,13 @@ class GStreamerHailoRealtimeAdapter:
         if self._evidence_writer is None and self.config.evidence_enabled:
             from .gstreamer import GStreamerEvidenceWriter
 
-            self._evidence_writer = GStreamerEvidenceWriter(output_dir=self.config.evidence_dir, clock=clock)
+            self._evidence_writer = GStreamerEvidenceWriter(
+                output_dir=self.config.evidence_dir,
+                min_interval_s=self.config.evidence_min_interval_s,
+                max_files=self.config.evidence_max_files,
+                max_age_s=self.config.evidence_max_age_s,
+                clock=clock,
+            )
         self.frame_source = GStreamerHailoFrameSource(
             self.config,
             device_exists=self._device_exists,

@@ -572,6 +572,21 @@ def gstreamer_hailo_config_from_eihead_config(
         score_threshold=_float(merged_hailo.get("score_threshold") or merged_hailo.get("scoreThreshold"), 0.3),
         labels=labels,
         model_id=_text(getattr(vision_backend, "model", ""), "hailo"),
+        evidence_dir=_text(merged_hailo.get("evidence_dir") or merged_hailo.get("evidenceDir"), "/tmp/eibrain-vision/evidence"),
+        evidence_enabled=_bool(merged_hailo.get("evidence_enabled") or merged_hailo.get("evidenceEnabled"), True),
+        evidence_face_crops_enabled=_bool(
+            merged_hailo.get("evidence_face_crops_enabled") or merged_hailo.get("evidenceFaceCropsEnabled"),
+            True,
+        ),
+        evidence_min_interval_s=_float(
+            merged_hailo.get("evidence_min_interval_s") or merged_hailo.get("evidenceMinIntervalS"),
+            1.0,
+        ),
+        evidence_max_files=_int(merged_hailo.get("evidence_max_files") or merged_hailo.get("evidenceMaxFiles"), 240),
+        evidence_max_age_s=_float(
+            merged_hailo.get("evidence_max_age_s") or merged_hailo.get("evidenceMaxAgeS"),
+            600.0,
+        ),
     )
 
 

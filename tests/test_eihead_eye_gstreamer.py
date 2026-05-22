@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
 from types import SimpleNamespace
 from typing import Generator
 
@@ -168,6 +169,65 @@ def test_evidence_writer_maps_raw_rgb_gstreamer_sample_to_jpegs(tmp_path) -> Non
     assert sample.buffer.unmapped is True
     assert evidence["frame"]["sample_source"] == "appsink_payload"
     assert evidence["face_crops"][0]["bbox"] == {"x_min": 0.0, "y_min": 0.0, "x_max": 0.5, "y_max": 0.5}
+
+
+def test_evidence_writer_throttles_exports_but_keeps_last_frame_reference(tmp_path) -> None:
+    clock = _MutableClock(10.0)
+    writer = gstreamer.GStreamerEvidenceWriter(output_dir=tmp_path, min_interval_s=1.0, clock=clock)
+    first = RealtimeVisionFrame(
+        frame_id="frame-1",
+        timestamp=10.0,
+        width=640,
+        height=480,
+        source="gstreamer_hailo",
+        payload=_FakeEvidenceSample(frame_bytes=b"\xff\xd8one\xff\xd9", crop_bytes=b"\xff\xd8crop\xff\xd9"),
+    )
+    second = RealtimeVisionFrame(
+        frame_id="frame-2",
+        timestamp=10.2,
+        width=640,
+        height=480,
+        source="gstreamer_hailo",
+        payload=_FakeEvidenceSample(frame_bytes=b"\xff\xd8two\xff\xd9", crop_bytes=b"\xff\xd8crop\xff\xd9"),
+    )
+
+    first_evidence = writer.export(first)
+    clock.value = 10.5
+    throttled = writer.export(second)
+    assert not (tmp_path / "frame-2-frame.jpg").exists()
+    clock.value = 11.1
+    second_evidence = writer.export(second)
+
+    assert first_evidence["frame"]["path"].endswith("frame-1-frame.jpg")
+    assert throttled["throttled"] is True
+    assert throttled["frame"]["path"].endswith("frame-1-frame.jpg")
+    assert throttled["face_crops"] == []
+    assert second_evidence["frame"]["path"].endswith("frame-2-frame.jpg")
+
+
+def test_evidence_writer_cleans_old_evidence_files(tmp_path) -> None:
+    old_file = tmp_path / "old-frame.jpg"
+    old_file.write_bytes(b"old")
+    os.utime(old_file, (1.0, 1.0))
+    writer = gstreamer.GStreamerEvidenceWriter(
+        output_dir=tmp_path,
+        min_interval_s=0.0,
+        max_age_s=10.0,
+        clock=lambda: 100.0,
+    )
+    frame = RealtimeVisionFrame(
+        frame_id="new-frame",
+        timestamp=100.0,
+        width=640,
+        height=480,
+        source="gstreamer_hailo",
+        payload=_FakeEvidenceSample(frame_bytes=b"\xff\xd8new\xff\xd9", crop_bytes=b"\xff\xd8crop\xff\xd9"),
+    )
+
+    writer.export(frame)
+
+    assert not old_file.exists()
+    assert (tmp_path / "new-frame-frame.jpg").exists()
 
 
 class _FakeGstreamerEnvironment:
@@ -342,3 +402,11 @@ class _FakeRawCaps:
 
     def get_structure(self, _index: int) -> dict[str, object]:
         return self.structure
+
+
+class _MutableClock:
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value

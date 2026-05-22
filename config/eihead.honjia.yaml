@@ -28,6 +28,10 @@ devices:
     inference_width: 640
     inference_height: 640
     inference_format: RGB
+    evidence_dir: /tmp/eibrain-vision/evidence
+    evidence_min_interval_s: ${EIHEAD_VISION_EVIDENCE_INTERVAL_S:-1.0}
+    evidence_max_files: ${EIHEAD_VISION_EVIDENCE_MAX_FILES:-240}
+    evidence_max_age_s: ${EIHEAD_VISION_EVIDENCE_MAX_AGE_S:-600}
     labels:
       - person
       - face

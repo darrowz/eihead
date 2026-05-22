@@ -246,10 +246,18 @@ class GStreamerEvidenceWriter:
         self,
         *,
         output_dir: str | Path = DEFAULT_EVIDENCE_DIR,
+        min_interval_s: float = 1.0,
+        max_files: int = 240,
+        max_age_s: float = 600.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.output_dir = Path(output_dir)
+        self.min_interval_s = max(0.0, float(min_interval_s))
+        self.max_files = max(0, int(max_files))
+        self.max_age_s = max(0.0, float(max_age_s))
         self._clock = clock
+        self._last_export_at = 0.0
+        self._last_frame_evidence: dict[str, Any] = {}
 
     def export(
         self,
@@ -261,18 +269,25 @@ class GStreamerEvidenceWriter:
         sample = frame.payload
         if sample is None:
             return {}
+        now_ts = float(self._clock())
+        if self.min_interval_s and self._last_export_at and now_ts - self._last_export_at < self.min_interval_s:
+            return (
+                {"frame": dict(self._last_frame_evidence), "face_crops": [], "throttled": True}
+                if self._last_frame_evidence
+                else {}
+            )
 
         evidence: dict[str, Any] = {}
         safe_frame_id = _safe_path_fragment(frame.frame_id)
         frame_bytes = _sample_jpeg_bytes(sample)
         if frame_bytes:
             frame_path = self.output_dir / f"{safe_frame_id}-frame.jpg"
-            self._write_bytes(frame_path, frame_bytes)
+            self._write_bytes(frame_path, frame_bytes, now_ts=now_ts)
             evidence["frame"] = {
                 "path": str(frame_path),
                 "frame_id": frame.frame_id,
                 "captured_at_ts": frame.timestamp,
-                "written_at_ts": float(self._clock()),
+                "written_at_ts": now_ts,
                 "source": frame.source,
                 "sample_source": "appsink_payload",
                 "mime_type": "image/jpeg",
@@ -293,7 +308,7 @@ class GStreamerEvidenceWriter:
                 if not crop_bytes:
                     continue
                 crop_path = self.output_dir / f"{safe_frame_id}-face-{index}.jpg"
-                self._write_bytes(crop_path, crop_bytes)
+                self._write_bytes(crop_path, crop_bytes, now_ts=now_ts)
                 face_crops.append(
                     {
                         "path": str(crop_path),
@@ -305,13 +320,45 @@ class GStreamerEvidenceWriter:
                     }
                 )
         evidence["face_crops"] = face_crops
-        return evidence if "frame" in evidence or face_crops else {}
+        if "frame" in evidence or face_crops:
+            self._last_export_at = now_ts
+            if "frame" in evidence:
+                self._last_frame_evidence = dict(evidence["frame"])
+            self._cleanup_output_dir(now_ts=now_ts)
+            return evidence
+        return {}
 
-    def _write_bytes(self, path: Path, payload: bytes) -> None:
+    def _write_bytes(self, path: Path, payload: bytes, *, now_ts: float) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f".{path.name}.{int(self._clock() * 1000)}.tmp")
+        tmp_path = path.with_name(f".{path.name}.{int(now_ts * 1000)}.tmp")
         tmp_path.write_bytes(payload)
         tmp_path.replace(path)
+
+    def _cleanup_output_dir(self, *, now_ts: float) -> None:
+        try:
+            files = [path for path in self.output_dir.glob("*.jpg") if path.is_file()]
+        except OSError:
+            return
+        if self.max_age_s > 0:
+            cutoff = now_ts - self.max_age_s
+            for path in files:
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink()
+                except OSError:
+                    continue
+            try:
+                files = [path for path in self.output_dir.glob("*.jpg") if path.is_file()]
+            except OSError:
+                return
+        if self.max_files <= 0 or len(files) <= self.max_files:
+            return
+        files.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0.0)
+        for path in files[: max(0, len(files) - self.max_files)]:
+            try:
+                path.unlink()
+            except OSError:
+                continue
 
 
 def _load_gstreamer_modules():
