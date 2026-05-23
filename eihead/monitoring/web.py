@@ -227,6 +227,10 @@ def create_handler(
                 self._write_json(HTTPStatus.OK, proxied if proxied is not None else _eivoice_runtime_payload(runtime_app))
                 return
             if path in {"/api/neck/status", "/api/neck/realtime"}:
+                proxied = _runtime_proxy_payload(path)
+                if proxied is not None:
+                    self._write_json(HTTPStatus.OK, proxied)
+                    return
                 self._write_json(
                     HTTPStatus.OK,
                     build_neck_diagnostics_from_app(runtime_app, timestamp=now()),
@@ -519,7 +523,7 @@ def _eivoice_runtime_payload(app: Any) -> JsonObject:
 
 
 def _runtime_proxy_payload(path: str) -> JsonObject | None:
-    if not _env_truthy("EIHEAD_MONITOR_PROXY_RUNTIME_VOICE"):
+    if not _runtime_proxy_enabled(path):
         return None
     base_url = os.environ.get("EIHEAD_RUNTIME_URL", "").strip().rstrip("/")
     if not base_url:
@@ -538,6 +542,12 @@ def _runtime_proxy_payload(path: str) -> JsonObject | None:
     if isinstance(payload, Mapping):
         return dict(payload)
     return None
+
+
+def _runtime_proxy_enabled(path: str) -> bool:
+    if path in {"/api/neck/status", "/api/neck/realtime"}:
+        return _env_truthy("EIHEAD_MONITOR_PROXY_RUNTIME_NECK") or _env_truthy("EIHEAD_MONITOR_PROXY_RUNTIME_VOICE")
+    return _env_truthy("EIHEAD_MONITOR_PROXY_RUNTIME_VOICE")
 
 
 def _eivoice_runtime_status_from_app(app: Any) -> JsonObject:

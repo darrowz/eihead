@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
+import os
+import threading
 import time
 from typing import Any, Mapping
 
 from eiprotocol.event_routing import classify_event
 from eihead.monitoring import build_status_snapshot
-from eihead.neck import PanMoveCommand, PanNeckState, plan_pan_move
+from eihead.neck import PanMoveCommand, PanNeckState, ReframeConfig, ReframeState, VisualTarget, plan_pan_move
+from eihead.neck import plan_reframe_action
 from eihead.protocol import MoveHeadAction, PlaySpeechAction, StopSpeechAction, serialize_message
 from eihead.services import CapabilityRegistry
 from .event_journal import EventJournal
@@ -74,9 +77,16 @@ class HeadRuntimeApp:
     native_providers: Mapping[str, Any] | None = field(default=None, repr=False)
     native_voice_status: Mapping[str, Any] | None = field(default=None, repr=False)
     voice_runtime: Any | None = field(default=None, repr=False)
+    neck_reframe_config: ReframeConfig = field(default_factory=ReframeConfig, repr=False)
+    neck_reframe_state: ReframeState = field(default_factory=ReframeState, repr=False)
+    neck_reframe_enabled: bool = False
+    neck_reframe_interval_s: float = 0.5
     _ptz_last_target_angle: int | None = field(default=None, init=False, repr=False)
     _last_neck_plan: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _last_neck_servo: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _last_neck_reframe: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _neck_reframe_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _neck_reframe_stop_event: threading.Event | None = field(default=None, init=False, repr=False)
     _native_provider_services: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -113,6 +123,7 @@ class HeadRuntimeApp:
         native_config = _load_optional_eihead_config(str(path))
         if neck_servo_adapter is None:
             neck_servo_adapter = build_native_neck_servo_adapter(native_config)
+        reframe_config, reframe_enabled, reframe_interval_s = _neck_reframe_settings_from_config(native_config)
         native_provider_statuses = build_native_provider_statuses(
             config=native_config,
             environ=native_environ,
@@ -136,6 +147,9 @@ class HeadRuntimeApp:
             native_providers=native_providers,
             native_voice_status=build_native_voice_status(native_config),
             voice_runtime=build_native_voice_runtime(native_config),
+            neck_reframe_config=reframe_config,
+            neck_reframe_enabled=reframe_enabled,
+            neck_reframe_interval_s=reframe_interval_s,
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -299,10 +313,121 @@ class HeadRuntimeApp:
             payload["neck_plan"] = dict(self._last_neck_plan)
         if self._last_neck_servo is not None:
             payload["neck_servo"] = dict(self._last_neck_servo)
+        if self._last_neck_reframe is not None:
+            payload["neck_reframe"] = dict(self._last_neck_reframe)
         return payload
 
     def neck_realtime(self) -> Mapping[str, Any]:
         return self.neck_status()
+
+    def tick_neck_reframe(self, now_ts: float | None = None, *, live: bool = True) -> dict[str, Any]:
+        now = float(time.time() if now_ts is None else now_ts)
+        target = _extract_visual_reframe_target(self.vision_realtime())
+        self.neck_reframe_state.current_pan_deg = float(self.neck_pan_state.current_angle)
+        state_before_action = replace(self.neck_reframe_state)
+        action = plan_reframe_action(
+            target,
+            state=self.neck_reframe_state,
+            config=self.neck_reframe_config,
+            now_ts=now,
+        )
+        action_payload = action.as_dict()
+        dispatch: dict[str, Any] | None = None
+        status = "observe" if action.mode == "observe" else "hold"
+        reason = action.reason
+        if action.will_move and live:
+            dispatch = self.handle_action(
+                {
+                    "type": "move_head",
+                    "axis": "pan",
+                    "angle": action.pan_deg,
+                    "target_x": action.target_x,
+                    "metadata": {
+                        "source": "neck_reframe",
+                        "mode": action.mode,
+                        "reason": action.reason,
+                        "frame_id": action.frame_id,
+                    },
+                },
+                trace_id=f"neck-reframe-{int(now * 1000)}",
+            )
+            status = _string_or_default(dispatch.get("status"), "accepted")
+            if not bool(dispatch.get("success")):
+                self.neck_reframe_state = state_before_action
+                reason = _neck_reframe_dispatch_failure_reason(dispatch) or _action_outcome_reason(dispatch) or status
+        elif action.will_move:
+            status = "planned"
+
+        result = _neck_reframe_tick_payload(
+            now_ts=now,
+            live=live,
+            target=_visual_target_payload(target) if target is not None else None,
+            action=action_payload,
+            dispatch=dispatch,
+            status=status,
+            reason=reason,
+        )
+        self._last_neck_reframe = dict(result)
+        return result
+
+    def start_neck_reframe_loop(self, *, interval_s: float | None = None, live: bool = True) -> dict[str, Any]:
+        if not self.neck_reframe_enabled:
+            return {
+                "status": "disabled",
+                "started": False,
+                "reason": "neck_reframe_disabled",
+            }
+        if self._neck_reframe_thread is not None and self._neck_reframe_thread.is_alive():
+            return {
+                "status": "running",
+                "started": False,
+                "reason": "neck_reframe_loop_already_running",
+                "interval_s": float(self.neck_reframe_interval_s),
+            }
+
+        interval = max(0.05, float(self.neck_reframe_interval_s if interval_s is None else interval_s))
+        self.neck_reframe_interval_s = interval
+        stop_event = threading.Event()
+        self._neck_reframe_stop_event = stop_event
+
+        def run_loop() -> None:
+            while not stop_event.is_set():
+                try:
+                    self.tick_neck_reframe(live=live)
+                except Exception as exc:  # pragma: no cover - protects long-running hardware process.
+                    self._last_neck_reframe = {
+                        "schema": "eihead.neck.reframe_tick.v1",
+                        "status": "error",
+                        "reason": "neck_reframe_loop_error",
+                        "error": str(exc),
+                        "live": bool(live),
+                        "ts": float(time.time()),
+                    }
+                stop_event.wait(interval)
+
+        thread = threading.Thread(target=run_loop, name="eihead-neck-reframe", daemon=True)
+        self._neck_reframe_thread = thread
+        thread.start()
+        return {
+            "status": "running",
+            "started": True,
+            "interval_s": interval,
+            "live": bool(live),
+        }
+
+    def stop_neck_reframe_loop(self, *, timeout_s: float = 1.0) -> dict[str, Any]:
+        stop_event = self._neck_reframe_stop_event
+        thread = self._neck_reframe_thread
+        if stop_event is None or thread is None:
+            return {"status": "stopped", "stopped": False, "reason": "neck_reframe_loop_not_started"}
+        stop_event.set()
+        if thread.is_alive():
+            thread.join(timeout=max(0.0, float(timeout_s)))
+        stopped = not thread.is_alive()
+        if stopped:
+            self._neck_reframe_thread = None
+            self._neck_reframe_stop_event = None
+        return {"status": "stopped" if stopped else "stopping", "stopped": stopped}
 
     def recent_events(self, limit: int | None = None) -> list[dict[str, Any]]:
         return self.event_journal.recent(limit)
@@ -1037,6 +1162,381 @@ def _attr_payload_candidates(source_object: Any, attr_names: tuple[str, ...]) ->
     return candidates
 
 
+def _neck_reframe_tick_payload(
+    *,
+    now_ts: float,
+    live: bool,
+    target: dict[str, Any] | None,
+    action: Mapping[str, Any],
+    dispatch: Mapping[str, Any] | None,
+    status: str,
+    reason: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "schema": "eihead.neck.reframe_tick.v1",
+        "ts": float(now_ts),
+        "status": status,
+        "reason": reason,
+        "live": bool(live),
+        "target": target,
+        "action": dict(action),
+        "will_move": bool(action.get("will_move")),
+        "suppressed": not bool(action.get("will_move")),
+        "suppression_reason": "" if action.get("will_move") else reason,
+    }
+    if dispatch is not None:
+        payload["dispatch"] = dict(dispatch)
+    return payload
+
+
+def _visual_target_payload(target: VisualTarget) -> dict[str, Any]:
+    return {
+        "label": target.label,
+        "target_x": target.target_x,
+        "known": target.known,
+        "confidence": target.confidence,
+        "crop_width": target.crop_width,
+        "crop_height": target.crop_height,
+        "frame_id": target.frame_id,
+        "track_id": target.track_id,
+        "reason": target.reason,
+    }
+
+
+def _extract_visual_reframe_target(payload: Any) -> VisualTarget | None:
+    data = _payload_mapping(payload)
+    if data is None:
+        return None
+    nested_observation = data.get("observation")
+    if isinstance(nested_observation, Mapping) and "detections" not in data:
+        data = dict(nested_observation)
+    detections = _list_payload(data.get("detections"))
+    face_detections = [item for item in detections if _is_face_detection(item)]
+    candidates = face_detections or _identity_observation_candidates(data) or _face_crop_candidates(data) or detections
+    if not candidates:
+        overlay = data.get("overlay")
+        if isinstance(overlay, Mapping):
+            top_target = overlay.get("top_target")
+            if isinstance(top_target, Mapping):
+                candidates = [dict(top_target)]
+        tracked_target = data.get("tracked_target") or data.get("target")
+        if not candidates and isinstance(tracked_target, Mapping):
+            candidates = [dict(tracked_target)]
+    if not candidates:
+        return None
+
+    frame_width = _optional_float(
+        data.get("frame_width")
+        or data.get("width")
+        or _mapping_value(data.get("frame"), "width")
+        or _mapping_value(data.get("stream"), "width")
+        or _mapping_value(data.get("evidence"), "frame", "width")
+    )
+    frame_height = _optional_float(
+        data.get("frame_height")
+        or data.get("height")
+        or _mapping_value(data.get("frame"), "height")
+        or _mapping_value(data.get("stream"), "height")
+        or _mapping_value(data.get("evidence"), "frame", "height")
+    )
+    best = _best_visual_target_candidate(candidates, frame_width=frame_width, frame_height=frame_height)
+    if best is None:
+        return None
+    detection, target_x, crop_width, crop_height = best
+    crop_width, crop_height = _face_crop_size(data, fallback_width=crop_width, fallback_height=crop_height)
+    return VisualTarget(
+        label=_string_or_default(detection.get("label"), "face"),
+        target_x=target_x,
+        known=_candidate_has_known_identity(data, detection),
+        confidence=_target_confidence(detection),
+        crop_width=_optional_int(crop_width),
+        crop_height=_optional_int(crop_height),
+        frame_id=data.get("frame_id") or detection.get("frame_id"),
+        track_id=detection.get("track_id") or detection.get("trackId") or detection.get("id"),
+        reason=_string_or_default(
+            detection.get("reason"),
+            "face_detection" if _is_face_detection(detection) else "visual_detection",
+        ),
+    )
+
+
+def _best_visual_target_candidate(
+    candidates: list[dict[str, Any]],
+    *,
+    frame_width: float | None,
+    frame_height: float | None,
+) -> tuple[dict[str, Any], float, float | None, float | None] | None:
+    best: tuple[float, dict[str, Any], float, float | None, float | None] | None = None
+    for detection in candidates:
+        target = _detection_target_x_and_size(detection, frame_width=frame_width, frame_height=frame_height)
+        if target is None:
+            continue
+        target_x, width, height = target
+        confidence = _optional_float(_first_present_value(detection, "confidence", "score")) or 0.0
+        area = (width or 0.0) * (height or 0.0)
+        score = confidence + min(area / 100_000.0, 1.0)
+        if best is None or score > best[0]:
+            best = (score, detection, target_x, width, height)
+    if best is None:
+        return None
+    _, detection, target_x, width, height = best
+    return detection, target_x, width, height
+
+
+def _detection_target_x_and_size(
+    detection: Mapping[str, Any],
+    *,
+    frame_width: float | None,
+    frame_height: float | None,
+) -> tuple[float, float | None, float | None] | None:
+    center_x = _center_x(detection.get("center") or detection.get("target_center"))
+    width: float | None = None
+    height: float | None = None
+    if center_x is None:
+        center_x, width, height = _bbox_target_x_and_size(
+            detection.get("bbox") or detection.get("box"),
+            frame_width=frame_width,
+            frame_height=frame_height,
+            bbox_format=_string_or_default(detection.get("bboxFormat") or detection.get("bbox_format"), ""),
+        )
+    if center_x is None:
+        center_x = _optional_float(detection.get("center_x") or detection.get("x"))
+    if center_x is None:
+        return None
+    if frame_width and center_x > 1.0:
+        center_x = center_x / frame_width
+    return _clamp_float(center_x, 0.0, 1.0), width, height
+
+
+def _bbox_target_x_and_size(
+    bbox: Any,
+    *,
+    frame_width: float | None,
+    frame_height: float | None,
+    bbox_format: str,
+) -> tuple[float | None, float | None, float | None]:
+    if isinstance(bbox, Mapping):
+        if all(key in bbox for key in ("x_min", "x_max")):
+            x_min = _optional_float(bbox.get("x_min"))
+            x_max = _optional_float(bbox.get("x_max"))
+            y_min = _optional_float(bbox.get("y_min"))
+            y_max = _optional_float(bbox.get("y_max"))
+            if x_min is None or x_max is None:
+                return None, None, None
+            return _normalize_bbox_center(x_min, x_max, y_min, y_max, frame_width=frame_width, frame_height=frame_height)
+        if all(key in bbox for key in ("x", "w")):
+            x = _optional_float(bbox.get("x"))
+            w = _optional_float(bbox.get("w"))
+            h = _optional_float(bbox.get("h"))
+            if x is None or w is None:
+                return None, None, None
+            center = x + (w / 2.0)
+            if frame_width and center > 1.0:
+                center = center / frame_width
+            return center, _pixel_extent(w, frame_width), _pixel_extent(h, frame_height)
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+        x1 = _optional_float(bbox[0])
+        y1 = _optional_float(bbox[1])
+        x2_or_w = _optional_float(bbox[2])
+        y2_or_h = _optional_float(bbox[3])
+        if x1 is None or x2_or_w is None:
+            return None, None, None
+        if bbox_format.strip().lower() in {"xyxy", "x_min_y_min_x_max_y_max"}:
+            return _normalize_bbox_center(x1, x2_or_w, y1, y2_or_h, frame_width=frame_width, frame_height=frame_height)
+        if x1 <= 1.0 and x2_or_w <= 1.0:
+            center = x1 + (x2_or_w / 2.0)
+            return center, _pixel_extent(x2_or_w, frame_width), _pixel_extent(y2_or_h, frame_height)
+        width = x2_or_w - x1 if x2_or_w > x1 else x2_or_w
+        center = x1 + (width / 2.0)
+        if frame_width and center > 1.0:
+            center = center / frame_width
+        height = None if y2_or_h is None else (y2_or_h - y1 if y1 is not None and y2_or_h > y1 else y2_or_h)
+        return center, width, _pixel_extent(height, frame_height)
+    return None, None, None
+
+
+def _normalize_bbox_center(
+    x_min: float,
+    x_max: float,
+    y_min: float | None,
+    y_max: float | None,
+    *,
+    frame_width: float | None,
+    frame_height: float | None,
+) -> tuple[float, float | None, float | None]:
+    center = (x_min + x_max) / 2.0
+    if frame_width and center > 1.0:
+        center = center / frame_width
+    width = abs(x_max - x_min)
+    height = None if y_min is None or y_max is None else abs(y_max - y_min)
+    return center, _pixel_extent(width, frame_width), _pixel_extent(height, frame_height)
+
+
+def _pixel_extent(value: float | None, frame_size: float | None) -> float | None:
+    if value is None:
+        return None
+    if value <= 1.0:
+        return value * frame_size if frame_size else None
+    return value
+
+
+def _center_x(center: Any) -> float | None:
+    if isinstance(center, Mapping):
+        return _optional_float(center.get("x") or center.get("center_x"))
+    if isinstance(center, (list, tuple)) and center:
+        return _optional_float(center[0])
+    return None
+
+
+def _face_crop_size(data: Mapping[str, Any], *, fallback_width: float | None, fallback_height: float | None) -> tuple[float | None, float | None]:
+    evidence = data.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return fallback_width, fallback_height
+    crops = _list_payload(evidence.get("face_crops") or evidence.get("faceCrops"))
+    if not crops:
+        return fallback_width, fallback_height
+    crop = crops[0]
+    return (
+        _optional_float(crop.get("width") or crop.get("w")) or fallback_width,
+        _optional_float(crop.get("height") or crop.get("h")) or fallback_height,
+    )
+
+
+def _identity_observation_candidates(data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for item in _list_payload(data.get("identity_observations")) + _list_payload(data.get("identities")):
+        evidence = item.get("evidence")
+        if not isinstance(evidence, Mapping):
+            continue
+        bbox = evidence.get("bbox")
+        if bbox is None:
+            continue
+        candidates.append(
+            {
+                "label": "face",
+                "known": item.get("known") if "known" in item else item.get("is_known"),
+                "confidence": _first_present_value(item, "confidence", mapping=evidence, fallback_keys=("similarity", "confidence")),
+                "bbox": bbox,
+                "track_id": evidence.get("track_id") or item.get("track_id") or item.get("trackId"),
+                "frame_id": item.get("frame_id") or evidence.get("frame_id"),
+                "reason": "identity_observation",
+            }
+        )
+    return candidates
+
+
+def _face_crop_candidates(data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    evidence = data.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return []
+    candidates: list[dict[str, Any]] = []
+    for crop in _list_payload(evidence.get("face_crops") or evidence.get("faceCrops")):
+        bbox = crop.get("bbox")
+        if bbox is None:
+            continue
+        candidates.append(
+            {
+                "label": "face",
+                "confidence": crop.get("confidence") or crop.get("score") or 1.0,
+                "bbox": bbox,
+                "track_id": crop.get("track_id") or crop.get("trackId"),
+                "frame_id": crop.get("frame_id"),
+                "reason": "face_crop",
+            }
+        )
+    return candidates
+
+
+def _payload_has_known_identity(data: Mapping[str, Any]) -> bool:
+    summary = str(data.get("identity_summary") or "").strip().lower()
+    if summary and "unknown" not in summary and summary not in {"none", "missing"}:
+        return True
+    for key in ("identity_observations", "identities"):
+        for item in _list_payload(data.get(key)):
+            if _truthy_payload_flag(item.get("known") or item.get("is_known")):
+                return True
+    return False
+
+
+def _candidate_has_known_identity(data: Mapping[str, Any], detection: Mapping[str, Any]) -> bool:
+    if "known" in detection or "is_known" in detection:
+        return _truthy_payload_flag(detection.get("known") if "known" in detection else detection.get("is_known"))
+
+    candidate_track_id = _optional_string(detection.get("track_id") or detection.get("trackId") or detection.get("id"))
+    identities = _list_payload(data.get("identity_observations")) + _list_payload(data.get("identities"))
+    if candidate_track_id:
+        for item in identities:
+            evidence = item.get("evidence")
+            evidence_payload = evidence if isinstance(evidence, Mapping) else {}
+            identity_track_id = _optional_string(
+                item.get("track_id")
+                or item.get("trackId")
+                or evidence_payload.get("track_id")
+                or evidence_payload.get("trackId")
+            )
+            if identity_track_id == candidate_track_id:
+                return _truthy_payload_flag(item.get("known") if "known" in item else item.get("is_known"))
+        return False
+
+    if len(identities) == 1 and len(_list_payload(data.get("detections"))) <= 1:
+        item = identities[0]
+        return _truthy_payload_flag(item.get("known") if "known" in item else item.get("is_known"))
+    return _payload_has_known_identity(data) if not identities else False
+
+
+def _target_confidence(detection: Mapping[str, Any]) -> float:
+    value = _optional_float(_first_present_value(detection, "confidence", "score"))
+    return 1.0 if value is None else value
+
+
+def _first_present_value(
+    primary: Mapping[str, Any],
+    *keys: str,
+    mapping: Mapping[str, Any] | None = None,
+    fallback_keys: tuple[str, ...] = (),
+) -> Any:
+    for key in keys:
+        if key in primary and primary.get(key) is not None:
+            return primary.get(key)
+    fallback = mapping or {}
+    for key in fallback_keys:
+        if key in fallback and fallback.get(key) is not None:
+            return fallback.get(key)
+    return None
+
+
+def _is_face_detection(item: Mapping[str, Any]) -> bool:
+    label = str(item.get("label") or item.get("class") or item.get("name") or "").strip().lower()
+    return label in {"face", "person_face", "human_face"}
+
+
+def _list_payload(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        return [dict(value)]
+    if isinstance(value, (str, bytes)):
+        return []
+    try:
+        raw_items = list(value)
+    except TypeError:
+        return []
+    return [dict(item) for item in raw_items if isinstance(item, Mapping)]
+
+
+def _mapping_value(value: Any, *keys: str) -> Any:
+    current = value
+    for key in keys:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _clamp_float(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
 def _native_provider_realtime_candidates(native_providers: Mapping[str, Any]) -> list[Any]:
     candidates: list[Any] = []
     eye_provider = native_providers.get("eye") if isinstance(native_providers, Mapping) else None
@@ -1241,6 +1741,78 @@ def _load_optional_eihead_config(path: str) -> Any | None:
         return None
 
 
+def _neck_reframe_settings_from_config(config: Any | None) -> tuple[ReframeConfig, bool, float]:
+    raw = getattr(config, "raw", None)
+    payload = dict(raw) if isinstance(raw, Mapping) else {}
+    reframe_payload = _mapping_from_any(
+        payload.get("neck_reframe")
+        or payload.get("visual_reframe")
+        or _mapping_value(payload.get("runtime"), "neck_reframe")
+        or _mapping_value(payload.get("neck"), "reframe")
+    )
+    config_payload = _mapping_from_any(reframe_payload.get("config"))
+    if not config_payload:
+        config_payload = dict(reframe_payload)
+    defaults = ReframeConfig()
+
+    reframe_config = ReframeConfig(
+        pan_min_deg=_env_float("EIHEAD_NECK_REFRAME_PAN_MIN_DEG", config_payload.get("pan_min_deg"), defaults.pan_min_deg),
+        pan_max_deg=_env_float("EIHEAD_NECK_REFRAME_PAN_MAX_DEG", config_payload.get("pan_max_deg"), defaults.pan_max_deg),
+        home_pan_deg=_env_float("EIHEAD_NECK_REFRAME_HOME_PAN_DEG", config_payload.get("home_pan_deg"), defaults.home_pan_deg),
+        comfort_min_x=_env_float("EIHEAD_NECK_REFRAME_COMFORT_MIN_X", config_payload.get("comfort_min_x"), defaults.comfort_min_x),
+        comfort_max_x=_env_float("EIHEAD_NECK_REFRAME_COMFORT_MAX_X", config_payload.get("comfort_max_x"), defaults.comfort_max_x),
+        clear_min_x=_env_float("EIHEAD_NECK_REFRAME_CLEAR_MIN_X", config_payload.get("clear_min_x"), defaults.clear_min_x),
+        clear_max_x=_env_float("EIHEAD_NECK_REFRAME_CLEAR_MAX_X", config_payload.get("clear_max_x"), defaults.clear_max_x),
+        min_face_width_px=_env_int("EIHEAD_NECK_REFRAME_MIN_FACE_WIDTH_PX", config_payload.get("min_face_width_px"), defaults.min_face_width_px),
+        min_face_height_px=_env_int("EIHEAD_NECK_REFRAME_MIN_FACE_HEIGHT_PX", config_payload.get("min_face_height_px"), defaults.min_face_height_px),
+        min_crop_aspect=_env_float("EIHEAD_NECK_REFRAME_MIN_CROP_ASPECT", config_payload.get("min_crop_aspect"), defaults.min_crop_aspect),
+        max_crop_aspect=_env_float("EIHEAD_NECK_REFRAME_MAX_CROP_ASPECT", config_payload.get("max_crop_aspect"), defaults.max_crop_aspect),
+        min_confidence=_env_float("EIHEAD_NECK_REFRAME_MIN_CONFIDENCE", config_payload.get("min_confidence"), defaults.min_confidence),
+        confirm_frames=_env_int("EIHEAD_NECK_REFRAME_CONFIRM_FRAMES", config_payload.get("confirm_frames"), defaults.confirm_frames),
+        reframe_step_deg=_env_float("EIHEAD_NECK_REFRAME_STEP_DEG", config_payload.get("reframe_step_deg"), defaults.reframe_step_deg),
+        return_step_deg=_env_float("EIHEAD_NECK_REFRAME_RETURN_STEP_DEG", config_payload.get("return_step_deg"), defaults.return_step_deg),
+        min_command_interval_s=_env_float(
+            "EIHEAD_NECK_REFRAME_MIN_COMMAND_INTERVAL_S",
+            config_payload.get("min_command_interval_s"),
+            defaults.min_command_interval_s,
+        ),
+        observe_hold_s=_env_float("EIHEAD_NECK_REFRAME_OBSERVE_HOLD_S", config_payload.get("observe_hold_s"), defaults.observe_hold_s),
+        cooldown_s=_env_float("EIHEAD_NECK_REFRAME_COOLDOWN_S", config_payload.get("cooldown_s"), defaults.cooldown_s),
+        anti_oscillation_cooldown_s=_env_float(
+            "EIHEAD_NECK_REFRAME_ANTI_OSCILLATION_COOLDOWN_S",
+            config_payload.get("anti_oscillation_cooldown_s"),
+            defaults.anti_oscillation_cooldown_s,
+        ),
+    )
+    enabled = _env_bool("EIHEAD_NECK_REFRAME_ENABLED", reframe_payload.get("enabled"), False)
+    interval_s = _env_float("EIHEAD_NECK_REFRAME_INTERVAL_S", reframe_payload.get("interval_s"), 0.5)
+    return reframe_config, enabled, interval_s
+
+
+def _mapping_from_any(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _env_bool(name: str, configured: Any, default: bool) -> bool:
+    if name in os.environ:
+        return _truthy_payload_flag(os.environ.get(name))
+    if configured is None:
+        return default
+    return _truthy_payload_flag(configured)
+
+
+def _env_float(name: str, configured: Any, default: float) -> float:
+    raw = os.environ.get(name) if name in os.environ else configured
+    value = _optional_float(raw)
+    return float(default if value is None else value)
+
+
+def _env_int(name: str, configured: Any, default: int) -> int:
+    raw = os.environ.get(name) if name in os.environ else configured
+    value = _optional_int(raw)
+    return int(default if value is None else value)
+
+
 def _event_trace_id(event: Mapping[str, Any] | Any) -> str | None:
     if isinstance(event, Mapping):
         return _optional_string(event.get("traceId") or event.get("trace_id"))
@@ -1328,6 +1900,24 @@ def _native_neck_reason(plan: Mapping[str, Any], servo_details: Mapping[str, Any
     if servo_reason:
         return servo_reason
     return _string_or_default(plan.get("reason"), "")
+
+
+def _neck_reframe_dispatch_failure_reason(dispatch: Mapping[str, Any]) -> str:
+    details = dispatch.get("details")
+    if not isinstance(details, Mapping):
+        return ""
+    servo_details = details.get("neck_servo")
+    if not isinstance(servo_details, Mapping):
+        return ""
+    reason = _string_or_default(servo_details.get("reason"), "")
+    if reason:
+        return reason
+    status = _string_or_default(servo_details.get("status"), "")
+    if status == "unavailable":
+        return "neck_servo_adapter_unavailable"
+    if status == "error":
+        return "neck_servo_adapter_error"
+    return status
 
 
 def _optional_float(value: Any) -> float | None:

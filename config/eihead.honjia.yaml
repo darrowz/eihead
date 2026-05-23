@@ -3,6 +3,24 @@ node_id: honjia
 runtime:
   host: ${EIHEAD_RUNTIME_HOST:-0.0.0.0}
   port: ${EIHEAD_RUNTIME_PORT:-18081}
+  neck_reframe:
+    enabled: ${EIHEAD_NECK_REFRAME_ENABLED:-false}
+    interval_s: ${EIHEAD_NECK_REFRAME_INTERVAL_S:-0.8}
+    config:
+      pan_min_deg: ${EIHEAD_NECK_REFRAME_PAN_MIN_DEG:-40}
+      pan_max_deg: ${EIHEAD_NECK_REFRAME_PAN_MAX_DEG:-140}
+      home_pan_deg: ${EIHEAD_NECK_REFRAME_HOME_PAN_DEG:-90}
+      comfort_min_x: ${EIHEAD_NECK_REFRAME_COMFORT_MIN_X:-0.18}
+      comfort_max_x: ${EIHEAD_NECK_REFRAME_COMFORT_MAX_X:-0.82}
+      clear_min_x: ${EIHEAD_NECK_REFRAME_CLEAR_MIN_X:-0.30}
+      clear_max_x: ${EIHEAD_NECK_REFRAME_CLEAR_MAX_X:-0.70}
+      confirm_frames: ${EIHEAD_NECK_REFRAME_CONFIRM_FRAMES:-3}
+      reframe_step_deg: ${EIHEAD_NECK_REFRAME_STEP_DEG:-5}
+      return_step_deg: ${EIHEAD_NECK_REFRAME_RETURN_STEP_DEG:-4}
+      min_command_interval_s: ${EIHEAD_NECK_REFRAME_MIN_COMMAND_INTERVAL_S:-1.0}
+      observe_hold_s: ${EIHEAD_NECK_REFRAME_OBSERVE_HOLD_S:-1.5}
+      cooldown_s: ${EIHEAD_NECK_REFRAME_COOLDOWN_S:-3.0}
+      anti_oscillation_cooldown_s: ${EIHEAD_NECK_REFRAME_ANTI_OSCILLATION_COOLDOWN_S:-3.0}
 
 monitor:
   host: ${EIHEAD_MONITOR_HOST:-0.0.0.0}

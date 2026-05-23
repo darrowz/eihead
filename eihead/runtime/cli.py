@@ -88,6 +88,9 @@ def _run_http_command(
     port: int,
     http_server: HttpServerRunner | None = None,
 ) -> dict[str, Any]:
+    start_reframe_loop = getattr(app, "start_neck_reframe_loop", None)
+    if callable(start_reframe_loop):
+        start_reframe_loop()
     runner = http_server or _load_http_server_runner()
     result = runner(app=app, host=host, port=port)
     if result is None:

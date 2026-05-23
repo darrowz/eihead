@@ -163,6 +163,8 @@ def create_handler(
                     return HTTPStatus.OK, build_voice_diagnostics_from_app(runtime_app, timestamp=now())
                 if path == "/api/eivoice/runtime":
                     return HTTPStatus.OK, _eivoice_runtime_payload(runtime_app)
+                if path in {"/api/neck/status", "/api/neck/realtime"}:
+                    return HTTPStatus.OK, self._call_mapping("neck_status")
                 if path in {"/actions", "/events"}:
                     raise HeadHttpApiError(
                         HTTPStatus.METHOD_NOT_ALLOWED,
@@ -187,6 +189,8 @@ def create_handler(
                     "/api/voice/realtime",
                     "/api/audio/realtime",
                     "/api/eivoice/runtime",
+                    "/api/neck/status",
+                    "/api/neck/realtime",
                 }:
                     raise HeadHttpApiError(
                         HTTPStatus.METHOD_NOT_ALLOWED,

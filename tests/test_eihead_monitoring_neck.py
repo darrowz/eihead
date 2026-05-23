@@ -8,6 +8,7 @@ from urllib import request
 from urllib.error import HTTPError
 
 from eihead.monitoring.web import create_server
+from eihead.runtime.http_api import create_server as create_runtime_server
 
 
 class BaseMonitorApp:
@@ -178,9 +179,40 @@ class BodyRuntimeOrganNeckApp(BaseMonitorApp):
         }
 
 
+class RuntimeNeckStatusApp(BaseMonitorApp):
+    def handle_action(self, action: dict[str, Any], trace_id: str | None = None) -> dict[str, Any]:
+        return {"status": "accepted", "success": True, "trace_id": trace_id or "", "action": action}
+
+    def neck_status(self) -> dict[str, Any]:
+        return {
+            "status": "wired",
+            "pan": {"current_angle": 95, "target_angle": 95},
+            "servo": {"status": "ready", "available": True},
+            "neck_reframe": {
+                "schema": "eihead.neck.reframe_tick.v1",
+                "status": "accepted",
+                "reason": "target_at_edge",
+            },
+        }
+
+
 @contextmanager
 def running_server(app: Any, **kwargs: Any) -> Iterator[tuple[str, object, threading.Thread]]:
     server = create_server(app, host="127.0.0.1", port=0, **kwargs)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        yield f"http://{host}:{port}", server, thread
+    finally:
+        server.shutdown()
+        thread.join(timeout=2.0)
+        server.server_close()
+
+
+@contextmanager
+def running_runtime_server(app: Any, **kwargs: Any) -> Iterator[tuple[str, object, threading.Thread]]:
+    server = create_runtime_server(app, host="127.0.0.1", port=0, **kwargs)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     host, port = server.server_address
@@ -277,6 +309,19 @@ def test_neck_api_reports_tilt_unsupported_from_direct_neck_plan() -> None:
     }
     assert payload["tilt"]["supported"] is False
     assert payload["tilt"]["reason"] == "tilt_not_supported"
+
+
+def test_neck_api_can_proxy_runtime_live_reframe_state(monkeypatch) -> None:
+    with running_runtime_server(RuntimeNeckStatusApp()) as (runtime_url, _runtime_server, _runtime_thread):
+        monkeypatch.setenv("EIHEAD_RUNTIME_URL", runtime_url)
+        monkeypatch.setenv("EIHEAD_MONITOR_PROXY_RUNTIME_NECK", "1")
+        with running_server(BaseMonitorApp(), clock=lambda: 1003.25) as (base_url, _server, _thread):
+            status_code, payload = read_json_or_error(f"{base_url}/api/neck/status")
+
+    assert status_code == 200
+    assert payload["status"] == "wired"
+    assert payload["neck_reframe"]["schema"] == "eihead.neck.reframe_tick.v1"
+    assert payload["neck_reframe"]["reason"] == "target_at_edge"
 
 
 def test_neck_api_extracts_body_runtime_organ_health_and_angles() -> None:
