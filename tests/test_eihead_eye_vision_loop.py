@@ -119,6 +119,46 @@ def test_identity_observations_match_face_crops_and_record_known_memory(tmp_path
     assert memory.observations[0]["person_id"] == "person-darrow"
 
 
+def test_identity_observations_skip_tiny_face_crops_before_matching(tmp_path: Path) -> None:
+    registry = JsonIdentityRegistry(tmp_path / "people.json")
+    registry.enroll_or_update(person_id="person-darrow", display_name="Darrow", embeddings=[[1.0, 0.0, 0.0]])
+    matcher = FaceIdentityMatcher(
+        registry=registry,
+        embedding_provider=StaticFaceEmbeddingProvider({"frame-1:face:1": [0.99, 0.01, 0.0]}, provider_id="test"),
+        threshold=0.85,
+    )
+    memory = _FakeMemoryAdapter()
+
+    observations = _identity_observations_from_evidence(
+        {"status": "tracking", "last_frame_id": "frame-1"},
+        evidence={
+            "face_crops": [
+                {
+                    "path": str(tmp_path / "tiny-face.jpg"),
+                    "frame_id": "frame-1",
+                    "width": 28,
+                    "height": 24,
+                    "bbox": {"x_min": 0.0, "y_min": 0.4, "x_max": 0.04, "y_max": 0.45},
+                },
+                {
+                    "path": str(tmp_path / "usable-face.jpg"),
+                    "frame_id": "frame-1",
+                    "width": 160,
+                    "height": 220,
+                    "bbox": {"x_min": 0.3, "y_min": 0.2, "x_max": 0.55, "y_max": 0.65},
+                },
+            ]
+        },
+        matcher=matcher,
+        memory_adapter=memory,
+    )
+
+    assert len(observations) == 1
+    assert observations[0]["known"] is True
+    assert observations[0]["crop"]["path"].endswith("usable-face.jpg")
+    assert memory.observations[0]["crop"]["path"].endswith("usable-face.jpg")
+
+
 def test_identity_observations_reuse_previous_during_evidence_throttle(tmp_path: Path) -> None:
     registry = JsonIdentityRegistry(tmp_path / "people.json")
     matcher = FaceIdentityMatcher(

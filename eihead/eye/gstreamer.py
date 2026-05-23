@@ -309,6 +309,11 @@ class GStreamerEvidenceWriter:
                     continue
                 crop_path = self.output_dir / f"{safe_frame_id}-face-{index}.jpg"
                 self._write_bytes(crop_path, crop_bytes, now_ts=now_ts)
+                crop_width, crop_height = _bbox_pixel_size(
+                    bbox,
+                    frame_width=frame.width,
+                    frame_height=frame.height,
+                )
                 face_crops.append(
                     {
                         "path": str(crop_path),
@@ -317,6 +322,8 @@ class GStreamerEvidenceWriter:
                         "score": _detection_score(detection),
                         "bbox": bbox,
                         "mime_type": "image/jpeg",
+                        "width": crop_width,
+                        "height": crop_height,
                     }
                 )
         evidence["face_crops"] = face_crops
@@ -576,6 +583,19 @@ def _bbox_pixel_bounds(
     x_max = max(x_min + 1, min(width, x_max))
     y_max = max(y_min + 1, min(height, y_max))
     return x_min, y_min, x_max, y_max
+
+
+def _bbox_pixel_size(
+    bbox: dict[str, float],
+    *,
+    frame_width: int | None,
+    frame_height: int | None,
+) -> tuple[int, int]:
+    bounds = _bbox_pixel_bounds(bbox, frame_width=frame_width, frame_height=frame_height)
+    if bounds is None:
+        return 0, 0
+    x_min, y_min, x_max, y_max = bounds
+    return max(0, x_max - x_min), max(0, y_max - y_min)
 
 
 def _axis_to_pixel(value: float, size: int) -> int:

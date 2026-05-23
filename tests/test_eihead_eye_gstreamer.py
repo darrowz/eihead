@@ -124,6 +124,8 @@ def test_evidence_writer_saves_current_sample_frame_and_face_crop(tmp_path) -> N
             "score": 0.91,
             "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.4, "y_max": 0.6},
             "mime_type": "image/jpeg",
+            "width": 192,
+            "height": 192,
         }
     ]
     assert sample.crop_requests == [

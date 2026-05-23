@@ -27,6 +27,9 @@ from eihead.runtime.native_services import gstreamer_hailo_config_from_eihead_co
 
 
 AdapterFactory = Callable[[GStreamerHailoRealtimeConfig], Any]
+MIN_IDENTITY_CROP_WIDTH_PX = 64
+MIN_IDENTITY_CROP_HEIGHT_PX = 64
+MIN_IDENTITY_BBOX_SIDE = 0.08
 
 
 def build_vision_state_payload(
@@ -315,6 +318,8 @@ def _identity_observations_from_evidence(
     for index, crop in enumerate(face_crops):
         if not isinstance(crop, Mapping):
             continue
+        if not _identity_crop_quality_ok(crop):
+            continue
         crop_path = _text(crop.get("path") or crop.get("uri"), "")
         crop_frame_id = _text(crop.get("frame_id") or frame_id, "")
         face_id = _text(crop.get("face_id") or crop.get("faceId"), "")
@@ -348,6 +353,25 @@ def _identity_observations_from_evidence(
             observation["memory"] = memory_adapter.ingest_identity_observation(observation)
         observations.append(observation)
     return observations
+
+
+def _identity_crop_quality_ok(crop: Mapping[str, Any]) -> bool:
+    width = _optional_float(crop.get("width"))
+    height = _optional_float(crop.get("height"))
+    if width is not None and height is not None:
+        if width < MIN_IDENTITY_CROP_WIDTH_PX or height < MIN_IDENTITY_CROP_HEIGHT_PX:
+            return False
+    bbox = crop.get("bbox")
+    if isinstance(bbox, Mapping):
+        x_min = _optional_float(bbox.get("x_min"))
+        y_min = _optional_float(bbox.get("y_min"))
+        x_max = _optional_float(bbox.get("x_max"))
+        y_max = _optional_float(bbox.get("y_max"))
+        if None not in (x_min, y_min, x_max, y_max):
+            if x_max <= 1.0 and y_max <= 1.0:
+                if x_max - x_min < MIN_IDENTITY_BBOX_SIDE or y_max - y_min < MIN_IDENTITY_BBOX_SIDE:
+                    return False
+    return True
 
 
 def _visual_identity_config(config: Any) -> dict[str, Any]:
@@ -388,6 +412,13 @@ def _float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _truthy(value: Any, default: bool = False) -> bool:
