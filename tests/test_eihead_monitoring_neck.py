@@ -319,9 +319,26 @@ def test_neck_api_can_proxy_runtime_live_reframe_state(monkeypatch) -> None:
             status_code, payload = read_json_or_error(f"{base_url}/api/neck/status")
 
     assert status_code == 200
+    assert payload["schema"] == "eihead.monitor.neck.v1"
     assert payload["status"] == "wired"
+    assert payload["current_angle"] == 95
+    assert payload["target_angle"] == 95
+    assert payload["readiness_message"] == "neck status is wired"
     assert payload["neck_reframe"]["schema"] == "eihead.neck.reframe_tick.v1"
     assert payload["neck_reframe"]["reason"] == "target_at_edge"
+
+
+def test_voice_runtime_proxy_flag_does_not_enable_neck_proxy(monkeypatch) -> None:
+    with running_runtime_server(RuntimeNeckStatusApp()) as (runtime_url, _runtime_server, _runtime_thread):
+        monkeypatch.setenv("EIHEAD_RUNTIME_URL", runtime_url)
+        monkeypatch.setenv("EIHEAD_MONITOR_PROXY_RUNTIME_VOICE", "1")
+        with running_server(BaseMonitorApp(), clock=lambda: 1003.3) as (base_url, _server, _thread):
+            status_code, payload = read_json_or_error(f"{base_url}/api/neck/status")
+
+    assert status_code == 200
+    assert payload["schema"] == "eihead.monitor.neck.v1"
+    assert payload["status"] == "not_wired"
+    assert "neck_reframe" not in payload
 
 
 def test_neck_api_extracts_body_runtime_organ_health_and_angles() -> None:

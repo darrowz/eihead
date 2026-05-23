@@ -355,6 +355,13 @@ class HeadRuntimeApp:
             if not bool(dispatch.get("success")):
                 self.neck_reframe_state = state_before_action
                 reason = _neck_reframe_dispatch_failure_reason(dispatch) or _action_outcome_reason(dispatch) or status
+                action_payload = {
+                    **action_payload,
+                    "pan_deg": float(self.neck_reframe_state.current_pan_deg),
+                    "pan_delta_deg": 0.0,
+                    "will_move": False,
+                    "state": self.neck_reframe_state.as_dict(),
+                }
         elif action.will_move:
             status = "planned"
 
@@ -1243,7 +1250,12 @@ def _extract_visual_reframe_target(payload: Any) -> VisualTarget | None:
     if best is None:
         return None
     detection, target_x, crop_width, crop_height = best
-    crop_width, crop_height = _face_crop_size(data, fallback_width=crop_width, fallback_height=crop_height)
+    crop_width, crop_height = _face_crop_size(
+        data,
+        detection=detection,
+        fallback_width=crop_width,
+        fallback_height=crop_height,
+    )
     return VisualTarget(
         label=_string_or_default(detection.get("label"), "face"),
         target_x=target_x,
@@ -1388,18 +1400,56 @@ def _center_x(center: Any) -> float | None:
     return None
 
 
-def _face_crop_size(data: Mapping[str, Any], *, fallback_width: float | None, fallback_height: float | None) -> tuple[float | None, float | None]:
+def _face_crop_size(
+    data: Mapping[str, Any],
+    *,
+    detection: Mapping[str, Any],
+    fallback_width: float | None,
+    fallback_height: float | None,
+) -> tuple[float | None, float | None]:
     evidence = data.get("evidence")
     if not isinstance(evidence, Mapping):
         return fallback_width, fallback_height
     crops = _list_payload(evidence.get("face_crops") or evidence.get("faceCrops"))
     if not crops:
         return fallback_width, fallback_height
-    crop = crops[0]
+    crop = _matching_face_crop(crops, detection) or crops[0]
     return (
         _optional_float(crop.get("width") or crop.get("w")) or fallback_width,
         _optional_float(crop.get("height") or crop.get("h")) or fallback_height,
     )
+
+
+def _matching_face_crop(crops: list[dict[str, Any]], detection: Mapping[str, Any]) -> dict[str, Any] | None:
+    detection_track_id = _optional_string(detection.get("track_id") or detection.get("trackId") or detection.get("id"))
+    if detection_track_id:
+        for crop in crops:
+            crop_track_id = _optional_string(crop.get("track_id") or crop.get("trackId") or crop.get("id"))
+            if crop_track_id == detection_track_id:
+                return crop
+
+    detection_bbox = detection.get("bbox") or detection.get("box")
+    if detection_bbox is None:
+        return crops[0] if len(crops) == 1 else None
+    best: tuple[float, dict[str, Any]] | None = None
+    for crop in crops:
+        crop_bbox = crop.get("bbox")
+        if crop_bbox is None:
+            continue
+        distance = _bbox_center_distance(detection_bbox, crop_bbox)
+        if distance is None:
+            continue
+        if best is None or distance < best[0]:
+            best = (distance, crop)
+    return None if best is None else best[1]
+
+
+def _bbox_center_distance(left_bbox: Any, right_bbox: Any) -> float | None:
+    left_x, _, _ = _bbox_target_x_and_size(left_bbox, frame_width=None, frame_height=None, bbox_format="")
+    right_x, _, _ = _bbox_target_x_and_size(right_bbox, frame_width=None, frame_height=None, bbox_format="")
+    if left_x is None or right_x is None:
+        return None
+    return abs(left_x - right_x)
 
 
 def _identity_observation_candidates(data: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1434,10 +1484,11 @@ def _face_crop_candidates(data: Mapping[str, Any]) -> list[dict[str, Any]]:
         bbox = crop.get("bbox")
         if bbox is None:
             continue
+        confidence = _first_present_value(crop, "confidence", "score")
         candidates.append(
             {
                 "label": "face",
-                "confidence": crop.get("confidence") or crop.get("score") or 1.0,
+                "confidence": confidence if confidence is not None else 1.0,
                 "bbox": bbox,
                 "track_id": crop.get("track_id") or crop.get("trackId"),
                 "frame_id": crop.get("frame_id"),

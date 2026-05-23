@@ -230,6 +230,9 @@ def test_tick_neck_reframe_restores_state_when_servo_dispatch_fails() -> None:
 
     assert result["status"] == "skipped"
     assert result["reason"] == "neck_servo_adapter_unavailable"
+    assert result["action"]["will_move"] is False
+    assert result["action"]["pan_deg"] == 90.0
+    assert result["action"]["state"]["phase"] == "idle"
     assert adapter.plans
     assert runtime.neck_reframe_state.as_dict() == before.as_dict()
 

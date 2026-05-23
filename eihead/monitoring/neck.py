@@ -171,6 +171,7 @@ def _payload_from_neck_data(payload: Mapping[str, Any], *, timestamp: float, sou
         return _payload_from_plan(plan, servo=servo, timestamp=timestamp, source=f"{source}.neck_plan")
 
     pan = _coerce_mapping(payload.get("pan") or payload.get("yaw") or payload.get("neck_pan_state")) or payload
+    neck_reframe = _coerce_mapping(payload.get("neck_reframe"))
     current_angle = _json_number(_first_present(pan, payload, keys=("current_angle", "current", "angle")))
     target_angle = _json_number(_first_present(pan, payload, keys=("target_angle", "target")))
     will_move = _optional_bool(_first_present(pan, payload, keys=("will_move", "moving")))
@@ -208,6 +209,7 @@ def _payload_from_neck_data(payload: Mapping[str, Any], *, timestamp: float, sou
         servo=normalized_servo,
         axis_support=axis_support,
         plan=plan,
+        neck_reframe=neck_reframe,
     )
 
 
@@ -365,6 +367,7 @@ def _base_payload(
     servo: JsonObject,
     axis_support: JsonObject,
     plan: Mapping[str, Any] | None,
+    neck_reframe: Mapping[str, Any] | None = None,
     not_wired: bool = False,
     message: str | None = None,
 ) -> JsonObject:
@@ -405,6 +408,8 @@ def _base_payload(
     }
     if plan is not None:
         payload["neck_plan"] = _json_ready(plan)
+    if neck_reframe is not None:
+        payload["neck_reframe"] = _json_ready(neck_reframe)
     return payload
 
 

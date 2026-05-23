@@ -229,7 +229,10 @@ def create_handler(
             if path in {"/api/neck/status", "/api/neck/realtime"}:
                 proxied = _runtime_proxy_payload(path)
                 if proxied is not None:
-                    self._write_json(HTTPStatus.OK, proxied)
+                    self._write_json(
+                        HTTPStatus.OK,
+                        _neck_diagnostics_from_runtime_proxy(proxied, timestamp=now()),
+                    )
                     return
                 self._write_json(
                     HTTPStatus.OK,
@@ -546,8 +549,19 @@ def _runtime_proxy_payload(path: str) -> JsonObject | None:
 
 def _runtime_proxy_enabled(path: str) -> bool:
     if path in {"/api/neck/status", "/api/neck/realtime"}:
-        return _env_truthy("EIHEAD_MONITOR_PROXY_RUNTIME_NECK") or _env_truthy("EIHEAD_MONITOR_PROXY_RUNTIME_VOICE")
+        return _env_truthy("EIHEAD_MONITOR_PROXY_RUNTIME_NECK")
     return _env_truthy("EIHEAD_MONITOR_PROXY_RUNTIME_VOICE")
+
+
+def _neck_diagnostics_from_runtime_proxy(payload: Mapping[str, Any], *, timestamp: float) -> JsonObject:
+    class RuntimeProxyNeckApp:
+        def neck_status(self) -> Mapping[str, Any]:
+            return payload
+
+        def neck_realtime(self) -> Mapping[str, Any]:
+            return payload
+
+    return build_neck_diagnostics_from_app(RuntimeProxyNeckApp(), timestamp=timestamp)
 
 
 def _eivoice_runtime_status_from_app(app: Any) -> JsonObject:
