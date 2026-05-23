@@ -21,6 +21,14 @@ class FakeVisionRuntime:
         return dict(self.payload)
 
 
+class FakeVoiceRuntime:
+    def __init__(self, payload: Mapping[str, Any] | None) -> None:
+        self.payload = dict(payload) if isinstance(payload, Mapping) else None
+
+    def voice_status(self) -> dict[str, Any] | None:
+        return dict(self.payload) if self.payload is not None else None
+
+
 class RecordingNeckServoAdapter:
     def __init__(self, *, status: str = "ok", success: bool = True) -> None:
         self.plans: list[dict[str, Any]] = []
@@ -161,6 +169,97 @@ def test_tick_neck_reframe_uses_identity_observation_bbox_when_detections_are_em
     assert result["action"]["mode"] == "reframe"
     assert len(adapter.plans) == 1
     assert adapter.plans[0]["action"]["target_angle"] == 95
+
+
+def test_tick_neck_reframe_does_not_move_while_voice_is_sleeping() -> None:
+    adapter = RecordingNeckServoAdapter()
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeVisionRuntime(
+            {
+                "kind": "realtime_vision_observation",
+                "mode": "realtime",
+                "status": "tracking",
+                "frame_id": "frame-sleeping-edge",
+                "frame_width": 640,
+                "frame_height": 480,
+                "detections": [
+                    {
+                        "label": "face",
+                        "score": 0.88,
+                        "bbox": [560, 140, 620, 280],
+                    }
+                ],
+                "evidence": {"face_crops": [{"width": 60, "height": 140}]},
+            }
+        ),
+        voice_runtime=FakeVoiceRuntime(
+            {
+                "voice_dialogue": {
+                    "phase": "sleeping",
+                    "conversation_active": False,
+                    "last_gate_status": "waiting_for_wake_word",
+                    "local_gate": {"state": "armed", "conversationActive": False},
+                }
+            }
+        ),
+        neck_servo_adapter=adapter,
+        neck_reframe_config=ReframeConfig(confirm_frames=1, min_command_interval_s=0.0),
+        neck_reframe_require_voice_awake=True,
+    )
+
+    result = runtime.tick_neck_reframe(now_ts=34.0, live=True)
+
+    assert result["status"] == "hold"
+    assert result["reason"] == "voice_sleeping"
+    assert result["target"] is None
+    assert result["action"]["mode"] == "hold"
+    assert result["action"]["will_move"] is False
+    assert result["voice_gate"]["allowed"] is False
+    assert adapter.plans == []
+
+
+def test_tick_neck_reframe_moves_after_voice_wakes() -> None:
+    adapter = RecordingNeckServoAdapter()
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeVisionRuntime(
+            {
+                "kind": "realtime_vision_observation",
+                "mode": "realtime",
+                "status": "tracking",
+                "frame_id": "frame-awake-edge",
+                "frame_width": 640,
+                "frame_height": 480,
+                "detections": [
+                    {
+                        "label": "face",
+                        "score": 0.88,
+                        "bbox": [560, 140, 620, 280],
+                    }
+                ],
+                "evidence": {"face_crops": [{"width": 60, "height": 140}]},
+            }
+        ),
+        voice_runtime=FakeVoiceRuntime(
+            {
+                "voice_dialogue": {
+                    "phase": "listening",
+                    "conversation_active": True,
+                    "local_gate": {"state": "active", "conversationActive": True},
+                }
+            }
+        ),
+        neck_servo_adapter=adapter,
+        neck_reframe_config=ReframeConfig(confirm_frames=1, min_command_interval_s=0.0),
+        neck_reframe_require_voice_awake=True,
+    )
+
+    result = runtime.tick_neck_reframe(now_ts=35.0, live=True)
+
+    assert result["status"] == "accepted"
+    assert result["reason"] == "target_at_edge"
+    assert result["action"]["mode"] == "reframe"
+    assert result["voice_gate"]["allowed"] is True
+    assert len(adapter.plans) == 1
 
 
 def test_tick_neck_reframe_holds_for_zero_confidence_identity_bbox() -> None:

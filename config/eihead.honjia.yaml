@@ -6,6 +6,7 @@ runtime:
   neck_reframe:
     enabled: ${EIHEAD_NECK_REFRAME_ENABLED:-false}
     interval_s: ${EIHEAD_NECK_REFRAME_INTERVAL_S:-0.8}
+    require_voice_awake: ${EIHEAD_NECK_REFRAME_REQUIRE_VOICE_AWAKE:-false}
     config:
       pan_min_deg: ${EIHEAD_NECK_REFRAME_PAN_MIN_DEG:-40}
       pan_max_deg: ${EIHEAD_NECK_REFRAME_PAN_MAX_DEG:-140}

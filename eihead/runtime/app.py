@@ -81,6 +81,7 @@ class HeadRuntimeApp:
     neck_reframe_state: ReframeState = field(default_factory=ReframeState, repr=False)
     neck_reframe_enabled: bool = False
     neck_reframe_interval_s: float = 0.5
+    neck_reframe_require_voice_awake: bool = False
     _ptz_last_target_angle: int | None = field(default=None, init=False, repr=False)
     _last_neck_plan: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _last_neck_servo: dict[str, Any] | None = field(default=None, init=False, repr=False)
@@ -123,7 +124,12 @@ class HeadRuntimeApp:
         native_config = _load_optional_eihead_config(str(path))
         if neck_servo_adapter is None:
             neck_servo_adapter = build_native_neck_servo_adapter(native_config)
-        reframe_config, reframe_enabled, reframe_interval_s = _neck_reframe_settings_from_config(native_config)
+        (
+            reframe_config,
+            reframe_enabled,
+            reframe_interval_s,
+            reframe_require_voice_awake,
+        ) = _neck_reframe_settings_from_config(native_config)
         native_provider_statuses = build_native_provider_statuses(
             config=native_config,
             environ=native_environ,
@@ -150,6 +156,7 @@ class HeadRuntimeApp:
             neck_reframe_config=reframe_config,
             neck_reframe_enabled=reframe_enabled,
             neck_reframe_interval_s=reframe_interval_s,
+            neck_reframe_require_voice_awake=reframe_require_voice_awake,
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -322,8 +329,25 @@ class HeadRuntimeApp:
 
     def tick_neck_reframe(self, now_ts: float | None = None, *, live: bool = True) -> dict[str, Any]:
         now = float(time.time() if now_ts is None else now_ts)
-        target = _extract_visual_reframe_target(self.vision_realtime())
         self.neck_reframe_state.current_pan_deg = float(self.neck_pan_state.current_angle)
+        voice_gate = _neck_reframe_voice_gate(self.voice_status()) if self.neck_reframe_require_voice_awake else None
+        if voice_gate is not None and not bool(voice_gate.get("allowed")):
+            reason = _string_or_default(voice_gate.get("reason"), "voice_not_awake")
+            action_payload = _neck_reframe_hold_action(self.neck_reframe_state, reason=reason)
+            result = _neck_reframe_tick_payload(
+                now_ts=now,
+                live=live,
+                target=None,
+                action=action_payload,
+                dispatch=None,
+                status="hold",
+                reason=reason,
+                voice_gate=voice_gate,
+            )
+            self._last_neck_reframe = dict(result)
+            return result
+
+        target = _extract_visual_reframe_target(self.vision_realtime())
         state_before_action = replace(self.neck_reframe_state)
         action = plan_reframe_action(
             target,
@@ -373,6 +397,7 @@ class HeadRuntimeApp:
             dispatch=dispatch,
             status=status,
             reason=reason,
+            voice_gate=voice_gate,
         )
         self._last_neck_reframe = dict(result)
         return result
@@ -1178,6 +1203,7 @@ def _neck_reframe_tick_payload(
     dispatch: Mapping[str, Any] | None,
     status: str,
     reason: str,
+    voice_gate: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema": "eihead.neck.reframe_tick.v1",
@@ -1193,7 +1219,97 @@ def _neck_reframe_tick_payload(
     }
     if dispatch is not None:
         payload["dispatch"] = dict(dispatch)
+    if voice_gate is not None:
+        payload["voice_gate"] = dict(voice_gate)
     return payload
+
+
+def _neck_reframe_hold_action(state: ReframeState, *, reason: str) -> dict[str, Any]:
+    state.suppressed_reason = reason
+    state.suppressed_count += 1
+    return {
+        "mode": "hold",
+        "pan_deg": float(state.current_pan_deg),
+        "pan_delta_deg": 0.0,
+        "will_move": False,
+        "reason": reason,
+        "target_x": None,
+        "target_label": None,
+        "target_known": None,
+        "frame_id": None,
+        "state": state.as_dict(),
+    }
+
+
+def _neck_reframe_voice_gate(payload: Any) -> dict[str, Any]:
+    data = _payload_mapping(payload)
+    if data is None:
+        return {"allowed": False, "reason": "voice_unavailable"}
+
+    observation = data.get("observation")
+    if isinstance(observation, Mapping) and (
+        "voice_dialogue" in observation or "voice_chain" in observation or "dialogue" in observation
+    ):
+        data = dict(observation)
+
+    dialogue = (
+        _mapping_from_any(data.get("voice_dialogue"))
+        or _mapping_from_any(data.get("voice_chain"))
+        or _mapping_from_any(data.get("dialogue"))
+    )
+    local_gate = (
+        _mapping_from_any(dialogue.get("local_gate"))
+        or _mapping_from_any(dialogue.get("localWakeGate"))
+        or _mapping_from_any(data.get("local_gate"))
+        or _mapping_from_any(data.get("localWakeGate"))
+    )
+    phase = _normalized_payload_text(dialogue.get("phase") or dialogue.get("state") or data.get("phase") or data.get("state"))
+    gate_state = _normalized_payload_text(local_gate.get("state"))
+    last_gate_status = _normalized_payload_text(
+        dialogue.get("last_gate_status")
+        or dialogue.get("lastGateStatus")
+        or local_gate.get("lastStatus")
+        or local_gate.get("last_status")
+        or data.get("last_gate_status")
+    )
+    conversation_active = (
+        _truthy_payload_flag(dialogue.get("conversation_active"))
+        or _truthy_payload_flag(dialogue.get("conversationActive"))
+        or _truthy_payload_flag(local_gate.get("conversationActive"))
+        or _truthy_payload_flag(local_gate.get("conversation_active"))
+    )
+    if conversation_active:
+        return _voice_gate_payload(True, "voice_awake", phase=phase, gate_state=gate_state, last_gate_status=last_gate_status)
+
+    if phase in {"listening", "thinking", "responding", "speaking", "active", "conversation_active"}:
+        return _voice_gate_payload(True, "voice_awake", phase=phase, gate_state=gate_state, last_gate_status=last_gate_status)
+
+    wake_word_required = _truthy_payload_flag(dialogue.get("wake_word_required") or data.get("wake_word_required"))
+    running_without_wake_word = _truthy_payload_flag(dialogue.get("running") or data.get("running")) and not wake_word_required
+    if running_without_wake_word:
+        return _voice_gate_payload(True, "voice_awake", phase=phase, gate_state=gate_state, last_gate_status=last_gate_status)
+
+    if phase == "sleeping" or gate_state == "armed" or last_gate_status == "waiting_for_wake_word":
+        return _voice_gate_payload(False, "voice_sleeping", phase=phase, gate_state=gate_state, last_gate_status=last_gate_status)
+
+    return _voice_gate_payload(False, "voice_not_awake", phase=phase, gate_state=gate_state, last_gate_status=last_gate_status)
+
+
+def _voice_gate_payload(
+    allowed: bool,
+    reason: str,
+    *,
+    phase: str,
+    gate_state: str,
+    last_gate_status: str,
+) -> dict[str, Any]:
+    return {
+        "allowed": bool(allowed),
+        "reason": reason,
+        "phase": phase,
+        "gate_state": gate_state,
+        "last_gate_status": last_gate_status,
+    }
 
 
 def _visual_target_payload(target: VisualTarget) -> dict[str, Any]:
@@ -1792,7 +1908,7 @@ def _load_optional_eihead_config(path: str) -> Any | None:
         return None
 
 
-def _neck_reframe_settings_from_config(config: Any | None) -> tuple[ReframeConfig, bool, float]:
+def _neck_reframe_settings_from_config(config: Any | None) -> tuple[ReframeConfig, bool, float, bool]:
     raw = getattr(config, "raw", None)
     payload = dict(raw) if isinstance(raw, Mapping) else {}
     reframe_payload = _mapping_from_any(
@@ -1837,7 +1953,12 @@ def _neck_reframe_settings_from_config(config: Any | None) -> tuple[ReframeConfi
     )
     enabled = _env_bool("EIHEAD_NECK_REFRAME_ENABLED", reframe_payload.get("enabled"), False)
     interval_s = _env_float("EIHEAD_NECK_REFRAME_INTERVAL_S", reframe_payload.get("interval_s"), 0.5)
-    return reframe_config, enabled, interval_s
+    require_voice_awake = _env_bool(
+        "EIHEAD_NECK_REFRAME_REQUIRE_VOICE_AWAKE",
+        reframe_payload.get("require_voice_awake"),
+        False,
+    )
+    return reframe_config, enabled, interval_s, require_voice_awake
 
 
 def _mapping_from_any(value: Any) -> dict[str, Any]:
