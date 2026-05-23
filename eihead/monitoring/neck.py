@@ -167,8 +167,6 @@ def _payload_from_neck_data(payload: Mapping[str, Any], *, timestamp: float, sou
 
     plan = _coerce_mapping(payload.get("neck_plan") or payload.get("plan"))
     servo = _coerce_mapping(payload.get("neck_servo") or payload.get("servo"))
-    if _looks_like_neck_plan(plan):
-        return _payload_from_plan(plan, servo=servo, timestamp=timestamp, source=f"{source}.neck_plan")
 
     pan = _coerce_mapping(payload.get("pan") or payload.get("yaw") or payload.get("neck_pan_state")) or payload
     neck_reframe = _coerce_mapping(payload.get("neck_reframe"))

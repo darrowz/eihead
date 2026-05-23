@@ -188,6 +188,7 @@ class RuntimeNeckStatusApp(BaseMonitorApp):
             "status": "wired",
             "pan": {"current_angle": 95, "target_angle": 95},
             "servo": {"status": "ready", "available": True},
+            "neck_plan": _pan_plan(status="planned", will_move=True, current_angle=90, target_angle=95, reason=""),
             "neck_reframe": {
                 "schema": "eihead.neck.reframe_tick.v1",
                 "status": "accepted",
@@ -324,6 +325,7 @@ def test_neck_api_can_proxy_runtime_live_reframe_state(monkeypatch) -> None:
     assert payload["current_angle"] == 95
     assert payload["target_angle"] == 95
     assert payload["readiness_message"] == "neck status is wired"
+    assert payload["neck_plan"]["status"] == "planned"
     assert payload["neck_reframe"]["schema"] == "eihead.neck.reframe_tick.v1"
     assert payload["neck_reframe"]["reason"] == "target_at_edge"
 
