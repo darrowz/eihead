@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-from typing import Any, Mapping
+import time
+from typing import Any, Callable, Mapping
 from urllib import error as urlerror, request as urlrequest
 
 
@@ -13,6 +14,7 @@ class EimemoryIdentityConfig:
     enabled: bool = False
     endpoint_url: str = ""
     timeout_s: float = 5.0
+    min_interval_s: float = 60.0
     scope: Mapping[str, str] = field(default_factory=dict)
     source: str = "eihead.eye.visual_identity"
 
@@ -21,10 +23,15 @@ class EimemoryIdentityConfig:
         payload = dict(raw or {})
         endpoint = payload.get("endpoint_url", payload.get("endpoint", ""))
         timeout = payload.get("timeout_s", payload.get("timeoutS", 5.0))
+        min_interval = payload.get(
+            "min_interval_s",
+            payload.get("minIntervalS", payload.get("sighting_min_interval_s", payload.get("sightingMinIntervalS", 60.0))),
+        )
         return cls(
             enabled=_truthy(payload.get("enabled", False)),
             endpoint_url=str(endpoint or ""),
             timeout_s=_safe_float(timeout, 5.0),
+            min_interval_s=max(0.0, _safe_float(min_interval, 60.0)),
             scope=_string_mapping(payload.get("scope")),
             source=str(payload.get("source") or "eihead.eye.visual_identity"),
         )
@@ -38,9 +45,12 @@ class IdentityMemoryAdapter:
         config: EimemoryIdentityConfig,
         *,
         urlopen: Any | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.config = config
         self.urlopen = urlopen or urlrequest.urlopen
+        self._clock = clock
+        self._last_sent_by_person: dict[str, float] = {}
 
     def ingest_identity_observation(self, observation: Any) -> dict[str, Any]:
         observation_payload = _observation_mapping(observation)
@@ -50,6 +60,17 @@ class IdentityMemoryAdapter:
             return {"status": "skipped", "reason": "endpoint_unconfigured"}
         if not _known_person(observation_payload):
             return {"status": "skipped", "reason": "unknown_person"}
+        throttle_key = _throttle_key(observation_payload)
+        if throttle_key and self.config.min_interval_s > 0:
+            now_ts = float(self._clock())
+            last_sent_at = self._last_sent_by_person.get(throttle_key)
+            if last_sent_at is not None and now_ts - last_sent_at < self.config.min_interval_s:
+                return {
+                    "status": "skipped",
+                    "reason": "recently_sent",
+                    "last_sent_at_ts": round(last_sent_at, 6),
+                    "next_allowed_at_ts": round(last_sent_at + self.config.min_interval_s, 6),
+                }
 
         payload = {"method": "memory.ingest", "params": self.build_memory_params(observation_payload)}
         try:
@@ -93,6 +114,8 @@ class IdentityMemoryAdapter:
         sent: dict[str, Any] = {"status": "sent"}
         if memory_id:
             sent["memory_id"] = str(memory_id)
+        if throttle_key and self.config.min_interval_s > 0:
+            self._last_sent_by_person[throttle_key] = float(self._clock())
         return sent
 
     def build_memory_params(self, observation: Any) -> dict[str, Any]:
@@ -155,6 +178,10 @@ def _known_person(observation: Mapping[str, Any]) -> bool:
     if "unknown" in label:
         return False
     return bool(_first_text(observation, "person_id", "personId", "display_name", "displayName", "name"))
+
+
+def _throttle_key(observation: Mapping[str, Any]) -> str:
+    return _first_text(observation, "person_id", "personId", "display_name", "displayName", "name")
 
 
 def _observation_mapping(observation: Any) -> dict[str, Any]:

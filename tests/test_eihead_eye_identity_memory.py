@@ -149,6 +149,31 @@ def test_identity_memory_adapter_accepts_identity_observations_with_as_dict() ->
     assert body["params"]["content"]["person_id"] == "person-chen"
 
 
+def test_identity_memory_adapter_throttles_repeated_person_sightings() -> None:
+    clock_value = 100.0
+
+    def clock() -> float:
+        return clock_value
+
+    urlopen = CapturingUrlopen(FakeResponse({"ok": True, "result": {"record_id": "mem-1"}}))
+    adapter = IdentityMemoryAdapter(
+        EimemoryIdentityConfig(enabled=True, endpoint_url="http://honxin:8091/", min_interval_s=60.0),
+        urlopen=urlopen,
+        clock=clock,
+    )
+
+    first = adapter.ingest_identity_observation({"known": True, "person_id": "person-darrow", "display_name": "Darrow"})
+    second = adapter.ingest_identity_observation({"known": True, "person_id": "person-darrow", "display_name": "Darrow"})
+    clock_value = 161.0
+    third = adapter.ingest_identity_observation({"known": True, "person_id": "person-darrow", "display_name": "Darrow"})
+
+    assert first == {"status": "sent", "memory_id": "mem-1"}
+    assert second["status"] == "skipped"
+    assert second["reason"] == "recently_sent"
+    assert third == {"status": "sent", "memory_id": "mem-1"}
+    assert len(urlopen.requests) == 2
+
+
 def test_identity_memory_adapter_skips_unknown_person_without_http() -> None:
     urlopen = CapturingUrlopen(FakeResponse({"result": {"memory_id": "mem-1"}}))
     adapter = IdentityMemoryAdapter(

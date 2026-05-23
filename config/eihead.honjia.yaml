@@ -142,6 +142,7 @@ capabilities:
         enabled: ${EIHEAD_VISUAL_IDENTITY_MEMORY_ENABLED:-true}
         endpoint: ${EIHEAD_EIMEMORY_RPC_URL:-http://honxin:8091/}
         timeout_s: ${EIHEAD_EIMEMORY_RPC_TIMEOUT_S:-2.0}
+        min_interval_s: ${EIHEAD_EIMEMORY_IDENTITY_MIN_INTERVAL_S:-60}
         scope:
           agent_id: honxin
           workspace_id: honjia
