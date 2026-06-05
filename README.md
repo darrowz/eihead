@@ -2,6 +2,39 @@
 
 Canonical honjia head runtime package for the ei-hongtu project.
 
+![eihead embodied runtime map](docs/assets/eihead-overview.svg)
+
+## EI Series Role
+
+`eihead` is the embodied runtime layer of the EI series. It owns the honjia head
+surface: realtime vision, audio input, speech playback, neck movement, monitor
+payloads, and local runtime APIs.
+
+It is separate from `eibrain` by design. `eibrain` decides what should happen;
+`eihead` reports what the head can observe and executes bounded head/body
+actions through explicit runtime endpoints and protocol events.
+
+## What It Is For
+
+`eihead` provides the physical or quasi-physical interface for EI deployments:
+
+- eye: camera/Hailo realtime observations and scene payloads
+- ear: realtime or quasi-streaming ASR boundaries
+- mouth: playback and TTS integration boundaries
+- neck: pan/yaw movement and monitor state
+- monitor: truthful status surfaces for operators
+- runtime API: HTTP/CLI entrypoints for status, probes, and action dispatch
+
+The package is meant to be deployed to honjia and monitored remotely from
+honxin/OpenClaw.
+
+## Truthful Runtime Rule
+
+`eihead` must never fake completion. If a stage is not wired, not hardware
+verified, blocked, or degraded, the API and monitor must say so explicitly.
+Static fixtures and offline diagnostics are useful for development, but they
+are not proof of live hardware cutover.
+
 `eihead` is the canonical honjia head runtime package. It depends on
 standalone `eiprotocol` for shared event contracts and does not vendor
 `eibrain`.
