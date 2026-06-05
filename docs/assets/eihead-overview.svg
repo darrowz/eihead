@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520" role="img" aria-labelledby="title desc">
+  <title id="title">eihead embodied runtime map</title>
+  <desc id="desc">Diagram showing eihead eye, ear, mouth, neck, monitor, and runtime API boundaries.</desc>
+  <rect width="960" height="520" fill="#f8fafc"/>
+  <style>
+    .box{fill:#ffffff;stroke:#334155;stroke-width:2;rx:12}
+    .main{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:14}
+    .text{font-family:Arial,Helvetica,sans-serif;fill:#0f172a}
+    .title{font-size:22px;font-weight:700}
+    .label{font-size:16px;font-weight:700}
+    .small{font-size:13px}
+    .arrow{stroke:#475569;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+  </style>
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker></defs>
+  <text class="text title" x="40" y="48">eihead: honjia embodied runtime</text>
+  <rect class="main" x="355" y="180" width="250" height="135"/>
+  <text class="text label" x="423" y="235">eihead</text>
+  <text class="text small" x="402" y="262">runtime API + monitor</text>
+  <text class="text small" x="405" y="286">truthful hardware state</text>
+  <rect class="box" x="70" y="90" width="195" height="80"/><text class="text label" x="142" y="128">Eye</text><text class="text small" x="93" y="152">camera + Hailo stream</text>
+  <rect class="box" x="70" y="230" width="195" height="80"/><text class="text label" x="142" y="268">Ear</text><text class="text small" x="100" y="292">ASR boundary</text>
+  <rect class="box" x="70" y="370" width="195" height="80"/><text class="text label" x="132" y="408">Mouth</text><text class="text small" x="101" y="432">TTS/playback</text>
+  <rect class="box" x="700" y="90" width="195" height="80"/><text class="text label" x="770" y="128">Neck</text><text class="text small" x="728" y="152">pan/yaw movement</text>
+  <rect class="box" x="700" y="230" width="195" height="80"/><text class="text label" x="758" y="268">eibrain</text><text class="text small" x="733" y="292">plans + actions</text>
+  <rect class="box" x="700" y="370" width="195" height="80"/><text class="text label" x="742" y="408">OpenClaw</text><text class="text small" x="728" y="432">operator monitor</text>
+  <path class="arrow" d="M265 130 C315 145 325 205 355 225"/>
+  <path class="arrow" d="M265 270 L355 260"/>
+  <path class="arrow" d="M265 410 C315 390 330 305 355 290"/>
+  <path class="arrow" d="M605 225 C650 195 660 130 700 130"/>
+  <path class="arrow" d="M700 270 L605 260"/>
+  <path class="arrow" d="M605 290 C650 330 665 410 700 410"/>
+</svg>
