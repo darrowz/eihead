@@ -12,6 +12,8 @@ def test_lightweight_monitor_only_shows_live_runtime_status_fields() -> None:
     assert "agent 连接" in body
     assert "ASR 识别内容" in body
     assert "TTS 回复内容" in body
+    assert "发送给 gateway" in body
+    assert "gateway 返回" in body
     assert "每 2.5 秒自动刷新" in body
 
     removed_legacy_labels = [

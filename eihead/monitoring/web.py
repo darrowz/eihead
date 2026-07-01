@@ -1298,8 +1298,9 @@ def _render_live_runtime_index(generated_at: str) -> str:
       const transport = voiceTransport(voice);
       const connection = transport.connection || {};
       const agent = dialogue.agent || {};
-      const asrText = first(dialogue.last_transcript, asr.last_user_transcript, asr.transcript);
-      const ttsText = first(dialogue.last_reply, voice.last_reply_delta, (voice.round || {}).reply);
+      const lastTurn = voice.last_turn || {};
+      const asrText = first(dialogue.last_transcript, asr.last_user_transcript, asr.transcript, lastTurn.recent_text, agent.last_request_text);
+      const ttsText = first(dialogue.last_reply, voice.last_reply_delta, (voice.round || {}).reply, lastTurn.recent_reply, agent.last_reply_text);
       setPill('health-pill', '系统健康', health.status);
       setPill('vision-pill', '视觉', vision.status);
       setPill('neck-pill', '脖子', neck.status);
@@ -1349,7 +1350,13 @@ def _render_live_runtime_index(generated_at: str) -> str:
         ['endpoint', agent.endpoint],
         ['ok', agent.ok],
         ['fallback', agent.fallback],
+        ['发送给 gateway', agent.last_request_text],
+        ['gateway 返回', agent.last_reply_text],
+        ['gateway 状态', agent.last_status],
+        ['gateway 耗时', metric(agent.last_elapsed_ms, 'ms')],
+        ['gateway 事件', Array.isArray(agent.last_event_types) ? agent.last_event_types.join(' / ') : agent.last_event_types],
         ['error', agent.error],
+        ['last error', agent.last_error],
       ]);
       setFaults(buildIssues(health, vision, neck, voice));
     }
