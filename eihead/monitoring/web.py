@@ -959,19 +959,17 @@ def _render_index(app: Any, timestamp: float) -> str:
 """
 
 
-def _render_lightweight_index(timestamp: float) -> str:
-    generated_at = _display_value(timestamp)
-    return f"""<!doctype html>
+def _render_live_runtime_index(generated_at: str) -> str:
+    return """<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>eihead native monitor</title>
+  <title>eihead 实时运行状态</title>
   <style>
-    :root {{
+    :root {
       --canvas: #101010;
       --surface: #151515;
-      --surface-soft: #1a1a1a;
       --hairline: #3d3a39;
       --ink: #f2f2f2;
       --body: #bdbdbd;
@@ -980,36 +978,36 @@ def _render_lightweight_index(timestamp: float) -> str:
       --green-soft: #2fd6a1;
       --warn: #f4c95d;
       --bad: #ff6b6b;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
+    }
+    * { box-sizing: border-box; }
+    body {
       margin: 0;
       font: 15px/1.55 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: var(--canvas);
       color: var(--ink);
-    }}
-    main {{ max-width: 1220px; margin: 0 auto; padding: 32px 24px 44px; }}
-    header {{
+    }
+    main { max-width: 1220px; margin: 0 auto; padding: 32px 24px 44px; }
+    header {
       display: grid;
       gap: 18px;
       border-bottom: 1px dashed rgba(79, 93, 117, 0.55);
       padding-bottom: 24px;
       margin-bottom: 22px;
-    }}
-    h1 {{ margin: 0; font-size: clamp(32px, 4vw, 56px); line-height: 1.03; font-weight: 400; letter-spacing: 0; }}
-    h2 {{ margin: 32px 0 14px; font-size: 22px; line-height: 1.25; font-weight: 650; letter-spacing: 0; }}
-    p {{ margin: 0; color: var(--body); max-width: 860px; }}
-    a {{ color: var(--green-soft); text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    .eyebrow {{
+    }
+    h1 { margin: 0; font-size: clamp(32px, 4vw, 56px); line-height: 1.03; font-weight: 400; letter-spacing: 0; }
+    h2 { margin: 30px 0 14px; font-size: 22px; line-height: 1.25; font-weight: 650; letter-spacing: 0; }
+    p { margin: 0; color: var(--body); max-width: 900px; }
+    a { color: var(--green-soft); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .eyebrow {
       color: var(--green);
       font-size: 12px;
       font-weight: 700;
       letter-spacing: 2.2px;
       text-transform: uppercase;
-    }}
-    .topline {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
-    .pill {{
+    }
+    .topline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .pill {
       display: inline-flex;
       align-items: center;
       min-height: 28px;
@@ -1019,27 +1017,28 @@ def _render_lightweight_index(timestamp: float) -> str:
       color: var(--body);
       font-size: 13px;
       white-space: nowrap;
-    }}
-    .pill.good {{ border-color: rgba(0, 217, 146, 0.45); color: var(--green); }}
-    .pill.warn {{ border-color: rgba(244, 201, 93, 0.5); color: var(--warn); }}
-    .pill.bad {{ border-color: rgba(255, 107, 107, 0.55); color: var(--bad); }}
-    .grid {{ display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }}
-    .card {{
+    }
+    .pill.good { border-color: rgba(0, 217, 146, 0.45); color: var(--green); }
+    .pill.warn { border-color: rgba(244, 201, 93, 0.5); color: var(--warn); }
+    .pill.bad { border-color: rgba(255, 107, 107, 0.55); color: var(--bad); }
+    .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .card {
       min-width: 0;
       background: var(--surface);
       border: 1px solid var(--hairline);
       border-radius: 8px;
       padding: 18px;
-    }}
-    .card.hot {{ border-color: rgba(0, 217, 146, 0.65); box-shadow: 0 0 0 1px rgba(0, 217, 146, 0.1) inset; }}
-    .label {{
+    }
+    .card.hot { border-color: rgba(0, 217, 146, 0.65); box-shadow: 0 0 0 1px rgba(0, 217, 146, 0.1) inset; }
+    .card.bad { border-color: rgba(255, 107, 107, 0.65); background: #1b1414; }
+    .label {
       color: var(--muted);
       font-size: 11px;
       font-weight: 700;
       letter-spacing: 1.6px;
       text-transform: uppercase;
-    }}
-    .metric {{
+    }
+    .metric {
       display: block;
       margin-top: 7px;
       color: var(--ink);
@@ -1048,25 +1047,25 @@ def _render_lightweight_index(timestamp: float) -> str:
       font-weight: 650;
       line-height: 1.2;
       overflow-wrap: anywhere;
-    }}
-    .hint {{ display: block; margin-top: 8px; color: var(--muted); font-size: 13px; }}
-    .rows {{ display: grid; gap: 8px; margin-top: 10px; }}
-    .row {{
+    }
+    .hint { display: block; margin-top: 8px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .rows { display: grid; gap: 8px; margin-top: 10px; }
+    .row {
       display: grid;
       gap: 8px;
-      grid-template-columns: minmax(110px, .75fr) minmax(0, 1.4fr);
+      grid-template-columns: minmax(120px, .72fr) minmax(0, 1.45fr);
       align-items: baseline;
       border-top: 1px solid rgba(61, 58, 57, 0.75);
       padding-top: 8px;
-    }}
-    .row span:first-child {{ color: var(--muted); font-size: 13px; }}
-    .row span:last-child {{
+    }
+    .row span:first-child { color: var(--muted); font-size: 13px; }
+    .row span:last-child {
       color: var(--ink);
       font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       overflow-wrap: anywhere;
-    }}
-    .endpoint-bar {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-    .endpoint-bar a {{
+    }
+    .endpoint-bar { display: flex; flex-wrap: wrap; gap: 8px; }
+    .endpoint-bar a {
       border: 1px solid var(--hairline);
       border-radius: 6px;
       padding: 8px 10px;
@@ -1074,43 +1073,54 @@ def _render_lightweight_index(timestamp: float) -> str:
       color: var(--green-soft);
       font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       font-size: 12px;
-    }}
-    @media (max-width: 860px) {{
-      main {{ padding: 24px 16px 36px; }}
-      .row {{ grid-template-columns: 1fr; }}
-      .metric {{ font-size: 18px; }}
-    }}
+    }
+    .issue-list {
+      margin: 10px 0 0;
+      padding-left: 18px;
+      color: var(--body);
+    }
+    .issue-list li { margin: 4px 0; overflow-wrap: anywhere; }
+    @media (max-width: 860px) {
+      main { padding: 24px 16px 36px; }
+      .row { grid-template-columns: 1fr; }
+      .metric { font-size: 18px; }
+    }
   </style>
 </head>
 <body>
   <main>
     <header>
       <div class="eyebrow">HONJIA LIVE DIAGNOSTICS</div>
-      <h1>eihead 真机监控台</h1>
-      <p>lightweight shell · generated {generated_at} · 页面会读取实时 API，并展示可判断的中文结论、具体数据和证据。</p>
+      <h1>实时运行状态</h1>
+      <p>generated __GENERATED_AT__ · 只展示 live API 真实返回的数据；缺失字段不会凑数展示。</p>
       <div class="topline">
-        <span class="pill" id="health-pill">健康：读取中</span>
+        <span class="pill" id="health-pill">系统健康：读取中</span>
         <span class="pill" id="vision-pill">视觉：读取中</span>
         <span class="pill" id="neck-pill">脖子：读取中</span>
         <span class="pill" id="voice-pill">语音：读取中</span>
       </div>
     </header>
 
-    <h2>具体数据</h2>
+    <h2>当前状态</h2>
     <section class="grid">
-      <div class="card"><div class="label">Web/API</div><span class="metric" id="health">读取中</span><span class="hint" id="health-hint">/health</span></div>
+      <div class="card hot"><div class="label">系统健康</div><span class="metric" id="health">读取中</span><span class="hint" id="health-hint">/health</span></div>
       <div class="card"><div class="label">视觉实时流</div><span class="metric" id="vision">读取中</span><span class="hint" id="vision-hint">/api/vision/realtime</span></div>
       <div class="card"><div class="label">脖子/云台</div><span class="metric" id="neck">读取中</span><span class="hint" id="neck-hint">/api/neck/status</span></div>
-      <div class="card"><div class="label">语音链路</div><span class="metric" id="voice">读取中</span><span class="hint" id="voice-hint">/api/voice/realtime</span></div>
+      <div class="card"><div class="label">语音会话</div><span class="metric" id="voice">读取中</span><span class="hint" id="voice-hint">/api/voice/realtime</span></div>
     </section>
 
-    <h2>证据</h2>
+    <h2>运行问题</h2>
+    <section class="grid">
+      <div class="card" id="fault-card"><div class="label">实时判断</div><span class="metric" id="fault-summary">读取中</span><ul class="issue-list" id="fault-list"></ul></div>
+      <div class="card"><div class="label">最近刷新</div><span class="metric" id="last-updated">读取中</span><span class="hint">每 2.5 秒自动刷新</span></div>
+    </section>
+
+    <h2>实时证据</h2>
     <section class="grid">
       <div class="card"><div class="label">视觉证据</div><div class="rows" id="vision-evidence"></div></div>
       <div class="card"><div class="label">脖子证据</div><div class="rows" id="neck-evidence"></div></div>
-      <div class="card hot"><div class="label">语音链路明细</div><span class="metric" id="voice-chain-state">读取中</span><span class="hint" id="voice-chain-steps">/api/voice/realtime</span><div class="rows" id="voice-chain-evidence"></div></div>
-      <div class="card"><div class="label">语音证据</div><div class="rows" id="voice-evidence"></div></div>
-      <div class="card"><div class="label">运行证据</div><div class="rows" id="health-evidence"></div></div>
+      <div class="card hot"><div class="label">语音证据</div><div class="rows" id="voice-evidence"></div></div>
+      <div class="card"><div class="label">agent 连接</div><div class="rows" id="agent-evidence"></div></div>
     </section>
 
     <h2>原始接口</h2>
@@ -1120,49 +1130,54 @@ def _render_lightweight_index(timestamp: float) -> str:
       <a href="/api/vision/realtime">/api/vision/realtime</a>
       <a href="/api/neck/status">/api/neck/status</a>
       <a href="/api/voice/realtime">/api/voice/realtime</a>
-      <a href="/api/voice/test">/api/voice/test</a>
       <a href="/api/capabilities">/api/capabilities</a>
     </div>
   </main>
   <script>
-    const timeoutSignal = (ms) => {{
+    const timeoutSignal = (ms) => {
       const controller = new AbortController();
       setTimeout(() => controller.abort(), ms);
       return controller.signal;
-    }};
-    async function loadJson(path) {{
-      const response = await fetch(path, {{ cache: 'no-store', signal: timeoutSignal(3500) }});
+    };
+    async function loadJson(path) {
+      const response = await fetch(path, { cache: 'no-store', signal: timeoutSignal(3500) });
+      if (!response.ok) return { status: 'error', error: `${path} HTTP ${response.status}` };
       return await response.json();
-    }}
-    function setText(id, text) {{
-      document.getElementById(id).textContent = text || 'unknown';
-    }}
-    function text(value, fallback = '未知') {{
-      if (value === null || value === undefined || value === '') return fallback;
+    }
+    function hasValue(value) {
+      return value !== null && value !== undefined && value !== '';
+    }
+    function first(...values) {
+      return values.find(hasValue);
+    }
+    function text(value, fallback = '无数据') {
+      if (!hasValue(value)) return fallback;
       if (typeof value === 'boolean') return value ? '是' : '否';
       return String(value);
-    }}
-    function metric(value, unit = '') {{
-      if (value === null || value === undefined || value === '') return '未知';
-      return `${{value}}${{unit}}`;
-    }}
-    function statusTone(status) {{
+    }
+    function metric(value, unit = '') {
+      if (!hasValue(value)) return '';
+      return `${value}${unit}`;
+    }
+    function statusTone(status) {
       const normalized = String(status || '').toLowerCase();
       if (['ok', 'online', 'healthy', 'ready', 'wired', 'tracking', 'running', 'live'].includes(normalized)) return 'good';
       if (['not_wired', 'offline', 'error', 'failed', 'blocked', 'unavailable'].includes(normalized)) return 'bad';
-      if (['degraded', 'stale', 'unknown', 'timeout'].includes(normalized)) return 'warn';
       return 'warn';
-    }}
-    function setPill(id, label, status) {{
+    }
+    function setPill(id, label, status) {
       const el = document.getElementById(id);
       const tone = statusTone(status);
-      el.className = `pill ${{tone}}`;
-      el.textContent = `${{label}}：${{text(status)}}`;
-    }}
-    function setRows(id, rows) {{
+      el.className = `pill ${tone}`;
+      el.textContent = `${label}：${text(status)}`;
+    }
+    function setText(id, value, fallback = '无数据') {
+      document.getElementById(id).textContent = text(value, fallback);
+    }
+    function setRows(id, rows) {
       const root = document.getElementById(id);
       root.innerHTML = '';
-      rows.forEach(([label, value]) => {{
+      rows.filter(([, value]) => hasValue(value)).forEach(([label, value]) => {
         const row = document.createElement('div');
         row.className = 'row';
         const left = document.createElement('span');
@@ -1171,184 +1186,186 @@ def _render_lightweight_index(timestamp: float) -> str:
         right.textContent = text(value);
         row.append(left, right);
         root.append(row);
-      }});
-    }}
-    function first(...values) {{
-      return values.find((value) => value !== null && value !== undefined && value !== '');
-    }}
-    function providerSummary(health, key) {{
-      const providers = health.native_providers || {{}};
-      const provider = providers[key] || {{}};
-      return `${{text(provider.status)}} / ${{text(provider.provider)}} / ${{text(provider.reason)}}`;
-    }}
-    function sourceFreshness(vision) {{
-      const freshness = vision.source_freshness || (vision.diagnostic || {{}}).source_freshness || {{}};
-      if (!freshness.state && freshness.age_s === undefined) return '未知';
-      return `${{text(freshness.state)}} · age=${{metric(freshness.age_s, 's')}}`;
-    }}
-    function neckMotionEvidence(neck) {{
-      const evidence = neck.motion_evidence || {{}};
-      if (evidence.verified === true) {{
-        const servo = evidence.servo_id ? `S${{evidence.servo_id}}` : 'S?';
-        const axis = evidence.axis === 'pan' ? '水平' : text(evidence.axis);
-        return `已确认：${{servo}} ${{axis}}舵机现场观察到转动`;
-      }}
-      if (evidence.verified === false) return '未确认：没有运动证据';
-      return '未知：没有运动证据';
-    }}
-    function currentActionWillMove(neck) {{
-      if (neck.will_move === null || neck.will_move === undefined) return '无当前动作';
-      return neck.will_move;
-    }}
-    function voiceReadiness(voice) {{
-      const chain = voice.voice_chain_readiness || {{}};
-      return first(voice.readiness_message, chain.readinessMessage, chain.summary, '未知');
-    }}
-    function playbackGateSummary(voice) {{
-      const observation = voice.observation || {{}};
-      const runtime = observation.eivoice_runtime || observation.eivoiceRuntime || {{}};
-      const frontend = runtime.audio_frontend || runtime.audioFrontend || {{}};
-      const gate = frontend.playbackGate || frontend.playback_gate || {{}};
-      if (!gate || Object.keys(gate).length === 0) return '未上报';
-      const muted = gate.muted === true ? '压制中' : '未压制';
-      const autoBarge = gate.bargeInEnabled === true || gate.barge_in_enabled === true ? '自动打断开' : '自动打断关';
-      const outputActive = gate.outputActive === true || gate.output_active === true ? '输出中' : '输出空闲';
-      const suppressed = first(gate.suppressedFrames, gate.suppressed_frames, 0);
-      const barge = first(gate.bargeInCount, gate.barge_in_count, 0);
-      const rms = first(gate.lastRms, gate.last_rms);
-      const peak = first(gate.lastPeak, gate.last_peak);
-      return `${{muted}} / ${{outputActive}} / ${{autoBarge}} / 回声帧=${{metric(suppressed)}} / 打断=${{metric(barge)}} / rms=${{metric(rms)}} / peak=${{metric(peak)}}`;
-    }}
-    function optimizationSummary(optimization) {{
-      const latency = optimization.latency_ms || {{}};
-      const bottleneck = optimization.bottleneck || {{}};
-      const wake = optimization.wakeword || {{}};
-      const audio = optimization.realtime_audio || {{}};
-      const parts = [];
-      if (bottleneck.stage) parts.push(`瓶颈=${{bottleneck.stage}} ${{metric(bottleneck.latency_ms, 'ms')}}`);
-      if (latency.listen_asr !== undefined) parts.push(`ASR=${{metric(latency.listen_asr, 'ms')}}`);
-      if (latency.dialogue !== undefined) parts.push(`eibrain=${{metric(latency.dialogue, 'ms')}}`);
-      if (latency.speak !== undefined) parts.push(`TTS=${{metric(latency.speak, 'ms')}}`);
-      if (latency.total !== undefined) parts.push(`总=${{metric(latency.total, 'ms')}}`);
-      if (wake.state || wake.last_gate_reason) parts.push(`唤醒=${{text(wake.state || wake.last_gate_reason)}}`);
-      if (audio.audio_level !== undefined) parts.push(`level=${{metric(audio.audio_level)}}`);
-      if (audio.rms_dbfs !== undefined) parts.push(`rms=${{metric(audio.rms_dbfs, 'dBFS')}}`);
-      return parts.length ? parts.join(' / ') : '未知';
-    }}
-    function voiceChainStateSummary(chain) {{
-      if (!chain || Object.keys(chain).length === 0) return '未知';
-      const parts = [];
-      parts.push(text(chain.state_label || chain.state));
-      if (chain.wake_state) parts.push(`wake=${{chain.wake_state}}`);
-      if (chain.phase) parts.push(`phase=${{chain.phase}}`);
-      return parts.join(' / ');
-    }}
-    function voiceChainStepsSummary(chain) {{
-      const steps = (chain || {{}}).steps || [];
-      const parts = steps
-        .filter((step) => step && step.key)
-        .map((step) => `${{text(step.label || step.key)}} ${{metric(step.latency_ms, 'ms')}}`);
-      return parts.length ? parts.join(' / ') : '未知';
-    }}
-    function openclawWsSummary(ws) {{
-      if (!ws || Object.keys(ws).length === 0) return '未配置';
-      const parts = [];
-      parts.push(ws.connected ? 'connected' : 'disconnected');
-      if (ws.session_state) parts.push(`session=${{ws.session_state}}`);
-      if (ws.url) parts.push(ws.url);
-      return parts.join(' / ');
-    }}
-    Promise.allSettled([
-      loadJson('/health'),
-      loadJson('/api/vision/realtime'),
-      loadJson('/api/neck/status'),
-      loadJson('/api/voice/realtime'),
-    ]).then((results) => {{
-      const values = results.map((item) => item.status === 'fulfilled' ? item.value : {{ status: 'timeout' }});
-      const health = values[0];
-      const vision = values[1];
-      const neck = values[2];
-      const voice = values[3];
-      setPill('health-pill', '健康', health.status);
+      });
+      if (!root.childElementCount) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.innerHTML = '<span>状态</span><span>无 live 字段</span>';
+        root.append(row);
+      }
+    }
+    function providerSummary(health, key) {
+      const provider = (health.native_providers || {})[key] || {};
+      return [provider.status, provider.provider, provider.reason].filter(hasValue).join(' / ');
+    }
+    function visionObservation(vision) {
+      return vision.observation || vision.diagnostic || vision || {};
+    }
+    function topDetectionSummary(detection) {
+      if (!detection || typeof detection !== 'object') return '';
+      const label = detection.label || 'target';
+      const score = first(detection.score, detection.confidence);
+      return hasValue(score) ? `${label} ${score}` : label;
+    }
+    function identitySummary(vision) {
+      const obs = visionObservation(vision);
+      const identities = obs.identity_observations || vision.identity_observations || [];
+      if (!Array.isArray(identities) || identities.length === 0) return '';
+      const item = identities[0] || {};
+      const name = item.display_name || item.person_id || (item.known === false ? 'unknown' : '');
+      const confidence = item.confidence;
+      return [name, hasValue(confidence) ? `confidence=${confidence}` : ''].filter(hasValue).join(' / ');
+    }
+    function evidenceFrameSummary(vision) {
+      const obs = visionObservation(vision);
+      const frame = ((obs.evidence || {}).frame || (vision.evidence || {}).frame || {});
+      return [frame.path, frame.frame_id].filter(hasValue).join(' / ');
+    }
+    function neckMotionEvidence(neck) {
+      const evidence = neck.motion_evidence || {};
+      if (evidence.verified === true) return evidence.summary || evidence.evidence || 'motion verified';
+      if (evidence.verified === false) return '未确认运动';
+      return '';
+    }
+    function voiceObs(voice) {
+      return voice.observation || {};
+    }
+    function voiceDialogue(voice) {
+      return voice.dialogue || voiceObs(voice).voice_dialogue || {};
+    }
+    function voiceAudio(voice) {
+      return voice.realtime_audio || voiceObs(voice).realtime_audio || {};
+    }
+    function voiceTransport(voice) {
+      const audio = voiceAudio(voice);
+      return audio.transport || {};
+    }
+    function buildIssues(health, vision, neck, voice) {
+      const issues = [];
+      const h = String(health.status || '').toLowerCase();
+      if (!['ok', 'healthy', 'ready'].includes(h)) issues.push(`health=${text(health.status)}`);
+      const v = String(vision.status || '').toLowerCase();
+      if (!['wired', 'ready', 'ok', 'running', 'live'].includes(v)) issues.push(`vision=${text(vision.status)}`);
+      const vObs = visionObservation(vision);
+      if (vision.stale === true || vObs.stale === true || (vision.diagnostic || {}).stale === true) issues.push('视觉流 stale');
+      const n = String(neck.status || '').toLowerCase();
+      if (['error', 'failed', 'offline', 'not_wired', 'unavailable'].includes(n)) issues.push(`neck=${text(neck.status)}`);
+      const dialogue = voiceDialogue(voice);
+      const transport = voiceTransport(voice);
+      const connection = transport.connection || {};
+      if (!['wired', 'ready', 'ok'].includes(String(voice.status || '').toLowerCase())) issues.push(`voice=${text(voice.status)}`);
+      if (dialogue.last_error) issues.push(`dialogue error=${dialogue.last_error}`);
+      if (transport.last_error) issues.push(`transport error=${transport.last_error}`);
+      if (String(connection.state || transport.state || '').toLowerCase() === 'error') issues.push('voice transport error');
+      return issues;
+    }
+    function setFaults(issues) {
+      const card = document.getElementById('fault-card');
+      const list = document.getElementById('fault-list');
+      list.innerHTML = '';
+      if (!issues.length) {
+        card.className = 'card hot';
+        setText('fault-summary', '全绿，暂无故障');
+        const item = document.createElement('li');
+        item.textContent = '所有展示项均来自 live API';
+        list.append(item);
+      } else {
+        card.className = 'card bad';
+        setText('fault-summary', `${issues.length} 个问题`);
+        issues.forEach((issue) => {
+          const item = document.createElement('li');
+          item.textContent = issue;
+          list.append(item);
+        });
+      }
+      setText('last-updated', new Date().toLocaleTimeString('zh-CN', { hour12: false }));
+    }
+    async function refreshDashboard() {
+      const [health, vision, neck, voice] = await Promise.all([
+        loadJson('/health'),
+        loadJson('/api/vision/realtime'),
+        loadJson('/api/neck/status'),
+        loadJson('/api/voice/realtime'),
+      ]);
+      const vObs = visionObservation(vision);
+      const dialogue = voiceDialogue(voice);
+      const ear = voice.ear || voiceObs(voice).ear || {};
+      const asr = ear.asr || {};
+      const capture = ear.capture || {};
+      const mouth = voice.mouth || voiceObs(voice).mouth || {};
+      const tts = mouth.tts_playback || {};
+      const audio = voiceAudio(voice);
+      const transport = voiceTransport(voice);
+      const connection = transport.connection || {};
+      const agent = dialogue.agent || {};
+      const asrText = first(dialogue.last_transcript, asr.last_user_transcript, asr.transcript);
+      const ttsText = first(dialogue.last_reply, voice.last_reply_delta, (voice.round || {}).reply);
+      setPill('health-pill', '系统健康', health.status);
       setPill('vision-pill', '视觉', vision.status);
       setPill('neck-pill', '脖子', neck.status);
       setPill('voice-pill', '语音', voice.status);
-      setText('health', `${{text(health.status)}} · ${{text(health.runtime)}}`);
-      setText('vision', `${{text(vision.status)}} · ${{metric(vision.fps, ' fps')}}`);
-      setText('neck', `${{text(neck.status)}} · ${{metric(neck.current_angle, 'deg')}} -> ${{metric(neck.target_angle, 'deg')}}`);
-      setText('voice', `${{text(voice.status)}} · audio=${{text((voice.realtime_audio || {{}}).running)}}`);
-      setText('health-hint', `providers: eye ${{providerSummary(health, 'eye')}}`);
-      setText('vision-hint', `${{text(vision.detections_summary, '无检测摘要')}}`);
-      setText('neck-hint', `${{text(neck.readiness_message, '无 readiness 信息')}}`);
-      setText('voice-hint', `${{voiceReadiness(voice)}}`);
-      const voiceChain = voice.voice_chain || {{}};
-      const voiceChainLatency = voiceChain.latency_ms || {{}};
-      setText('voice-chain-state', voiceChainStateSummary(voiceChain));
-      setText('voice-chain-steps', voiceChainStepsSummary(voiceChain));
+      setText('health', [health.status, health.runtime || health.node_role].filter(hasValue).join(' · '));
+      setText('vision', [vision.status, metric(vObs.fps || vision.fps, ' fps')].filter(hasValue).join(' · '));
+      setText('neck', [neck.status, hasValue(neck.current_angle) ? `${neck.current_angle}deg -> ${text(neck.target_angle)}deg` : ''].filter(hasValue).join(' · '));
+      setText('voice', [voice.status, dialogue.state || dialogue.phase || (voice.round || {}).state].filter(hasValue).join(' · '));
+      document.getElementById('health-hint').textContent = `eye ${providerSummary(health, 'eye')}`;
+      document.getElementById('vision-hint').textContent = text(vObs.readiness_message || vision.readiness_message || (vObs.readiness || {}).reason, 'live frame');
+      document.getElementById('neck-hint').textContent = text(neck.readiness_message || (neck.servo || {}).reason);
+      document.getElementById('voice-hint').textContent = text(dialogue.readiness_message || voice.readiness_message);
       setRows('vision-evidence', [
-        ['状态', vision.status],
-        ['画面帧', first(vision.frame_id, (vision.overlay || {{}}).frame?.frame_id)],
-        ['FPS', metric(vision.fps)],
-        ['帧年龄', metric(first(vision.last_frame_age_s, vision.last_frame_age), 's')],
-        ['检测数量', first(vision.detection_count, (vision.detections || []).length)],
-        ['最高目标', text((vision.top_detection || {{}}).label, '无')],
-        ['数据新鲜度', sourceFreshness(vision)],
-        ['图像', text(((vision.overlay || {{}}).frame || {{}}).image_message, '无图像说明')],
+        ['状态', vObs.status || vision.status],
+        ['backend', vObs.backend],
+        ['frame id', first(vObs.last_frame_id, vision.frame_id)],
+        ['frame age', metric(first(vObs.last_frame_age_s, vObs.last_frame_age), 's')],
+        ['fps', metric(vObs.fps || vision.fps)],
+        ['检测数量', first((vObs.detections || []).length, vObs.detection_count, vision.detection_count)],
+        ['最高目标', topDetectionSummary(vObs.top_detection || vision.top_detection)],
+        ['identity', identitySummary(vision)],
+        ['evidence frame', evidenceFrameSummary(vision)],
       ]);
       setRows('neck-evidence', [
         ['状态', neck.status],
         ['当前角度', metric(neck.current_angle, 'deg')],
         ['目标角度', metric(neck.target_angle, 'deg')],
-        ['运动验证', neckMotionEvidence(neck)],
-        ['本次指令会动', currentActionWillMove(neck)],
-        ['是否抑制', neck.suppressed],
+        ['servo', [neck.servo_status, (neck.servo || {}).reason].filter(hasValue).join(' / ')],
+        ['motion', neckMotionEvidence(neck)],
+        ['pan', ((neck.axis_support || {}).pan || {}).status],
+        ['tilt', ((neck.axis_support || {}).tilt || {}).status],
         ['抑制原因', neck.suppression_reason],
-        ['Servo', `${{text((neck.servo || {{}}).status)}} / ${{text((neck.servo || {{}}).reason)}}`],
-        ['Axis', `pan=${{text(((neck.axis_support || {{}}).pan || {{}}).status)}} / tilt=${{text(((neck.axis_support || {{}}).tilt || {{}}).status)}}`],
       ]);
       setRows('voice-evidence', [
-        ['状态', voice.status],
-        ['实时音频', `enabled=${{text((voice.realtime_audio || {{}}).enabled)}} / running=${{text((voice.realtime_audio || {{}}).running)}}`],
-        ['OpenClaw WS', openclawWsSummary(voice.openclaw_ws || {{}})],
-        ['OpenClaw 错误', text((voice.openclaw_ws || {{}}).last_error, '无')],
-        ['回声门控', playbackGateSummary(voice)],
-        ['Round', `${{text((voice.round || {{}}).phase)}} / active=${{text((voice.round || {{}}).active)}}`],
-        ['Scheduler', text((voice.scheduler || {{}}).state)],
-        ['事件数', metric(voice.event_count)],
-        ['首 token', metric(((voice.latency || {{}}).stage_latency_ms || {{}}).first_reply_token, 'ms')],
-        ['首语音', metric(((voice.latency || {{}}).stage_latency_ms || {{}}).first_speech, 'ms')],
-        ['性能优化', optimizationSummary(voice.optimization || {{}})],
-        ['Readiness', voiceReadiness(voice)],
+        ['service', voice.source],
+        ['session', [dialogue.session_id, dialogue.state || dialogue.phase].filter(hasValue).join(' / ')],
+        ['ASR', [asr.provider || ear.provider, asr.status].filter(hasValue).join(' / ')],
+        ['ASR 识别内容', text(asrText, '暂无识别文本')],
+        ['TTS 回复内容', text(ttsText, '暂无回复文本')],
+        ['TTS', [mouth.provider, tts.status].filter(hasValue).join(' / ')],
+        ['播放设备', ((tts.details || {}).device)],
+        ['音频入口', [capture.device, capture.status, audio.active === true ? 'active' : 'idle'].filter(hasValue).join(' / ')],
+        ['transport', [transport.provider, (connection.state || transport.state)].filter(hasValue).join(' / ')],
       ]);
-      setRows('voice-chain-evidence', [
-        ['链路状态', voiceChainStateSummary(voiceChain)],
-        ['ASR 识别', metric(voiceChainLatency.listen_asr, 'ms')],
-        ['脑端回复', metric(voiceChainLatency.dialogue, 'ms')],
-        ['TTS 播放', metric(voiceChainLatency.speak, 'ms')],
-        ['总耗时', metric(voiceChainLatency.total, 'ms')],
-        ['ASR 到首文本', metric(voiceChainLatency.asr_to_first_text, 'ms')],
-        ['ASR 到首音频', metric(voiceChainLatency.asr_to_first_audio, 'ms')],
-        ['首文本到首音频', metric(voiceChainLatency.first_text_to_first_audio, 'ms')],
-        ['音频接收持续', metric(voiceChainLatency.audio_receive_span, 'ms')],
-        ['最大音频间隔', metric(voiceChainLatency.audio_gap_max, 'ms')],
-        ['音频块数量', metric(voiceChainLatency.audio_chunks)],
-        ['最后 ASR', voiceChain.last_asr_text],
-        ['最后 TTS', voiceChain.last_tts_text],
+      setRows('agent-evidence', [
+        ['provider', agent.provider],
+        ['endpoint', agent.endpoint],
+        ['ok', agent.ok],
+        ['fallback', agent.fallback],
+        ['error', agent.error],
       ]);
-      setRows('health-evidence', [
-        ['状态', health.status],
-        ['Runtime', health.runtime],
-        ['节点', first(health.node_id, health.node_role)],
-        ['Eye provider', providerSummary(health, 'eye')],
-        ['Ear provider', providerSummary(health, 'ear')],
-        ['Mouth provider', providerSummary(health, 'mouth')],
-        ['Neck provider', providerSummary(health, 'neck')],
-      ]);
-    }});
+      setFaults(buildIssues(health, vision, neck, voice));
+    }
+    refreshDashboard().catch((error) => setFaults([`dashboard refresh failed: ${error}`]));
+    setInterval(() => {
+      refreshDashboard().catch((error) => setFaults([`dashboard refresh failed: ${error}`]));
+    }, 2500);
   </script>
 </body>
 </html>
-"""
+""".replace("__GENERATED_AT__", generated_at)
+
+
+def _render_lightweight_index(timestamp: float) -> str:
+    generated_at = _display_value(timestamp)
+    return _render_live_runtime_index(generated_at)
 
 
 def _env_truthy(name: str) -> bool:
